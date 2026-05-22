@@ -8,7 +8,7 @@
 
 ```
 kaggle-connect-x/
-├── submission.py              # Kaggle 提交入口 (Bitboard Minimax + Alpha-Beta + TT)
+├── submission.py              # Kaggle 提交入口 (Bitboard NegaScout + Zobrist TT + Killer + Odd/Even)
 ├── test_agent.py              # 行为测试 + 对战/可视化 CLI (29 项)
 ├── test_unit.py               # 全面单元测试 (111 项)
 ├── requirements.txt           # 依赖声明
@@ -79,14 +79,14 @@ agent(observation, configuration)
     │
     ├── 1. 快速检测: 立即获胜 → 返回列号
     ├── 2. 快速检测: 拦截对手 → 返回列号
-    ├── 3. 开局库:    前 2 步走中心
+    ├── 3. 开局库:    前 8 步理论最佳着法
     └── 4. 迭代加深搜索 → 返回最佳列
             │
             ├── Bitboard 位运算表示 (np.uint64)
-            ├── NegaScout (PVS) 搜索
-            ├── Alpha-Beta 剪枝 + 着法排序
-            ├── Zobrist 哈希 + 置换表 (深度优先替换)
-            ├── 局面评估: 窗口评分 + 位置热图 + 威胁计数
+            ├── NegaScout (PVS) 搜索 + Null-Window Scout
+            ├── Zobrist 哈希 + 置换表 (1M 条目, 深度优先替换)
+            ├── Killer Heuristic 着法排序 (2 slots/depth)
+            ├── 局面评估: 窗口评分 + 位置热图 + 奇偶威胁分析
             └── 时间感知 + 自适应深度起点
 ```
 
@@ -94,7 +94,7 @@ agent(observation, configuration)
 
 | Agent | 文件 | 搜索算法 | 特点 |
 |-------|------|----------|------|
-| `submission.py` | 根目录 | Minimax + Alpha-Beta | 独立单文件, Kaggle 提交用 |
+| `submission.py` | 根目录 | NegaScout + Bitboard | 独立单文件, Zobrist TT 1M, Killer, Odd/Even 威胁分析, ~8ply 开局库 |
 | `MinimaxBitboardAgent` | `agents/minimax_bitboard.py` | NegaScout + Bitboard | 位运算加速 5-10x, 置换表 |
 | `MCTSAgent` | `agents/mcts_agent.py` | MCTS + UCB1 | 启发式 Rollout, 时间预算 |
 
@@ -102,26 +102,27 @@ agent(observation, configuration)
 
 | 参数 | 值 |
 |------|-----|
-| 搜索算法 | Minimax + Alpha-Beta (含 NegaScout 变体) |
+| 搜索算法 | NegaScout (PVS) + Null-Window Scout |
 | 棋盘表示 | Bitboard (np.uint64, 每列 7 bit 编码) |
-| 迭代加深 | 自适应起点 4~8 层, 最高 20 层 |
+| 迭代加深 | 自适应起点 4~10 层, 最高 20 层 |
 | 置换表 | Zobrist 哈希, 1M 条目, 深度优先替换 |
-| 着法排序 | 置换表最佳 → 中心列 → 两侧 |
-| 评估函数 | 窗口评分 (1/2/3/4 连) + 位置热图 + 威胁计数 |
+| 着法排序 | TT最佳 → Killer (2/depth) → 中心列 → 两侧 |
+| 评估函数 | 窗口评分 (2/3 连) + 位置热图 + 奇偶威胁分析 |
 | 时间预算 | 1.9s (预留 0.1s 缓冲) |
-| 开局库 | 前 2 步走中心 (P1/P2 对称) |
+| 开局库 | ~8 ply 已知理论最佳着法 |
 
 ### 局面评估函数
 
-对棋盘四个方向（水平/垂直/对角线）的滑动窗口打分：
+对棋盘四个方向（水平/垂直/对角线）的位运算滑动窗口打分：
 
-| 窗口内己方棋子数 | 1 | 2 | 3 | 4 |
-|---|---|---|---|---|
-| 得分 | +1 | +10 | +100 | +1000 |
+| 窗口内己方棋子数 | 2 | 3 |
+|---|---|---|
+| 得分 | +10 | +100 |
 
+- 1 连分数由位置热图处理（中心列权重大于两侧）
+- 4 连由搜索终端检测捕获，评估函数不单独计分
+- **奇偶威胁分析**: 奇数行（从底部数）威胁权重 > 偶数行，随游戏进程逐渐增强
 - 含双方棋子的窗口 = 0（已死）
-- 位置热图加成：中心列权重大于两侧
-- 威胁计数：3 连威胁额外 +50 分
 
 ---
 
@@ -160,12 +161,20 @@ agent(observation, configuration)
 | `test_agent.py` | 29 | Agent 行为, MCTS, Bitboard, Elo, 锦标赛集成 |
 | `test_unit.py` | 111 | 所有辅助函数, Zobrist TT, MCTSNode, BaseAgent, BenchmarkRunner, Reporter, Ablation |
 
-### 对战测试
+### 对战测试 (Kaggle Evaluate API)
 
-| 对手 | 胜率 |
-|------|------|
-| random | 100% (10/10) |
-| negamax | 100% (10/10) |
+| 对手 | 50 局胜率 | 备注 |
+|------|:--:|------|
+| random | **100%** | 50W / 0L / 0D |
+| negamax | **72%** | 36W / 14L / 0D |
+
+### 性能基准
+
+| 指标 | 值 |
+|------|:--:|
+| 平均单局耗时 | ~4.2s |
+| 平均步数 | ~20 步 |
+| 单步决策 | < 2s (满足 Kaggle 限制) |
 
 ---
 
@@ -195,12 +204,18 @@ agent(observation, configuration)
 
 ## Kaggle 提交说明
 
-`submission.py` 是独立提交文件, 满足以下约束:
+`submission.py` 是独立提交文件 (659 行), 满足以下约束:
 
 1. **`agent` 函数必须在文件末尾** — Kaggle 通过 `get_last_callable` 识别入口
 2. **仅允许单个 `.py` 文件** — 提交时只上传 `submission.py`
-3. **响应时限 ≤ 2 秒** — 算法在 1.9s 内自适应停止
+3. **响应时限 ≤ 2 秒** — 算法在 1.9s 内自适应停止, 平均单步 < 2s
 4. **内联所有依赖** — 不依赖 `agents/` 或 `evaluate/` 目录
+5. **仅依赖 `numpy`** — Kaggle 环境已预装, 无需额外依赖
+
+```bash
+# 提交命令
+kaggle competitions submit -c connectx -f submission.py -m "Bitboard NegaScout + Zobrist TT + Killer + Odd/Even"
+```
 
 ---
 
