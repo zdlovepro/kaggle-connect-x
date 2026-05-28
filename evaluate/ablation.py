@@ -125,8 +125,14 @@ def ablation_suite(
     # 以下为示例结构，实际使用时需要配合不同配置的 agent 文件。
 
     experiments = [
-        # (agent_a, agent_b, label, games)
-        # 实际使用时替换为不同配置的 agent 路径
+        ("submission.py", "negamax", "Full vs Negamax", games),
+        ("submission.py", "random", "Full vs Random", games),
+        # 消融变体 — 创建 agents/ablated/ 目录放入去掉特定功能的 submission 副本:
+        # ("submission.py", "agents/ablated/no_tt.py", "Full vs No TT", games),
+        # ("submission.py", "agents/ablated/no_killer.py", "Full vs No Killer", games),
+        # ("submission.py", "agents/ablated/no_odd_even.py", "Full vs No Odd/Even", games),
+        # ("submission.py", "agents/ablated/shallow_depth4.py", "Full vs Depth=4", games),
+        # ("submission.py", "agents/ablated/no_iterative.py", "Full vs No IterDeep", games),
     ]
 
     for agent_a, agent_b, label, n_games in experiments:

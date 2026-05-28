@@ -229,8 +229,17 @@ def _list_to_bitboards(board_list):
 # Window weights: [1-in-row, 2-in-row, 3-in-row, 4-in-row]
 # 1-in-row = 0: single-piece scoring handled by position heatmap
 # 4-in-row: never reaches leaf eval (caught by terminal check in search)
-_W_SCORE = 10.0   # 2-in-a-row
+_W_SCORE = 10.0    # 2-in-a-row
 _W_THREAT = 100.0  # 3-in-a-row
+_W_HMAP = 0.3      # position heatmap multiplier
+_W_ODD_EVEN = 80.0 # odd/even threat scale factor
+
+# TD-Learning weights (set by evaluate/td_learn.py at runtime)
+# When not None, the evaluation function uses these learned weights.
+# Format: [bias, w_2self, w_3self, w_2opp, w_3opp,
+#          w_hmap_self, w_hmap_opp,
+#          w_odd_self, w_even_self, w_odd_opp, w_even_opp]
+_TD_WEIGHTS = None
 
 # Position heatmap (6 rows x 7 cols, center-weighted, symmetric)
 _HEATMAP = np.array([
@@ -294,7 +303,7 @@ def _eval_odd_even_threats(b_self, b_opp, heights):
     filled = sum(heights)
     # Scale: 0 at start, 1.0 at endgame
     phase = filled / (COLS * ROWS)
-    scale = 80.0 * phase  # gradually increase threat importance
+    scale = _W_ODD_EVEN * phase  # gradually increase threat importance
 
     bonus = 0.0
     for c in range(COLS):
@@ -336,7 +345,7 @@ def _eval_position_heatmap(b_self, b_opp):
         lsb = int(b & (~b + np.uint64(1)))  # lowest set bit
         pos = (lsb.bit_length() - 1)
         if pos < len(_HMAP_POS):
-            bonus += _HMAP_POS[pos] * 0.3
+            bonus += _HMAP_POS[pos] * _W_HMAP
         b ^= lsb
     # Opponent pieces
     b = b_opp
@@ -344,7 +353,7 @@ def _eval_position_heatmap(b_self, b_opp):
         lsb = int(b & (~b + np.uint64(1)))
         pos = (lsb.bit_length() - 1)
         if pos < len(_HMAP_POS):
-            bonus -= _HMAP_POS[pos] * 0.3
+            bonus -= _HMAP_POS[pos] * _W_HMAP
         b ^= lsb
     return bonus
 
@@ -356,10 +365,83 @@ def evaluate(b_self, b_opp, heights):
     if _has_won(b_opp):
         return -100000.0
 
+    if _TD_WEIGHTS is not None:
+        return _evaluate_learned(b_self, b_opp, heights)
+
     score = _eval_window_count(b_self, b_opp)
     score += _eval_odd_even_threats(b_self, b_opp, heights)
     score += _eval_position_heatmap(b_self, b_opp)
     return float(score)
+
+
+def _evaluate_learned(b_self, b_opp, heights):
+    """Learned evaluation using TD-optimized weights."""
+    w = _TD_WEIGHTS
+    raw = w[0]  # bias
+
+    # Window counts (features 1-4)
+    for idx, b in enumerate([b_self, b_opp]):
+        base = 1 if idx == 0 else 3
+        b_nor = b & ~_COL6_MASK
+        b_nol = b & ~_COL0_MASK
+
+        h2 = b_nor & (b >> np.uint64(1))
+        v2 = b & (b >> np.uint64(ROW_STRIDE))
+        d12 = b_nor & (b >> np.uint64(ROW_STRIDE + 1))
+        d22 = b_nol & (b >> np.uint64(ROW_STRIDE - 1))
+        c2 = h2.bit_count() + v2.bit_count() + d12.bit_count() + d22.bit_count()
+        raw += w[base] * float(c2)
+
+        h3 = h2 & (b >> np.uint64(2))
+        v3 = v2 & (b >> np.uint64(ROW_STRIDE))
+        d13 = d12 & (b >> np.uint64(ROW_STRIDE + 2))
+        d23 = d22 & (b >> np.uint64(ROW_STRIDE - 2))
+        c3 = h3.bit_count() + v3.bit_count() + d13.bit_count() + d23.bit_count()
+        raw += w[base + 1] * float(c3)
+
+    # Heatmap (features 5-6)
+    for idx, b in enumerate([b_self, b_opp]):
+        fi = 5 if idx == 0 else 6
+        bb = b
+        hsum = 0.0
+        while bb:
+            lsb = int(bb & (~bb + np.uint64(1)))
+            pos = (lsb.bit_length() - 1)
+            if pos < len(_HMAP_POS):
+                hsum += _HMAP_POS[pos]
+            bb ^= lsb
+        raw += w[fi] * hsum
+
+    # Odd/Even threats (features 7-10)
+    filled = sum(int(heights[c]) for c in range(COLS))
+    phase = filled / (COLS * ROWS)
+    scale = phase
+    for c in range(COLS):
+        h = int(heights[c])
+        if h < 3:
+            continue
+        complete_row = ROWS - 1 - h
+        bottom_parity = h % 2
+        all_self = True
+        all_opp = True
+        for r in range(complete_row + 1, complete_row + 4):
+            mask = np.uint64(1) << np.uint64(r * ROW_STRIDE + c)
+            if not (b_self & mask):
+                all_self = False
+            if not (b_opp & mask):
+                all_opp = False
+        if all_self:
+            if bottom_parity == 1:
+                raw += w[7] * (2.0 * scale + 0.125)
+            else:
+                raw += w[8] * (0.5 * scale + 0.0375)
+        elif all_opp:
+            if bottom_parity == 1:
+                raw += w[9] * (2.0 * scale + 0.125)
+            else:
+                raw += w[10] * (0.5 * scale + 0.0375)
+
+    return float(math.tanh(raw) * 100000.0)
 
 
 # ═══════════════════════════════════════════════════════════════

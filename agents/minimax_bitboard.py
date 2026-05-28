@@ -16,6 +16,12 @@ from typing import Any, List, Optional, Tuple
 
 import numpy as np
 
+from connectx.bitboard import (
+    COLS, ROWS, INAROW, ROW_STRIDE,
+    has_won, list_to_bitboards as _shared_list_to_bb,
+    get_heights_from_list, HEATMAP, HMAP_POS,
+)
+
 from .base import BaseAgent
 from .zobrist import (
     TranspositionTable,
@@ -28,180 +34,76 @@ from .zobrist import (
 )
 
 
-# ── Bitboard 常量 (7列 × 6行) ───────────────────────────────
+# ── Bitboard 常量 ────────────────────────────────────────────
 
-COLS = 7
-ROWS = 6
-INAROW = 4
 MAX_DEPTH = 20
 
 # 列掩码: 每列 6 bit 的位掩码
 _TOP_ROW_MASK = np.uint64(0)
 for c in range(COLS):
-    _TOP_ROW_MASK |= np.uint64(1) << np.uint64(c * (ROWS + 1))
+    _TOP_ROW_MASK |= np.uint64(1) << np.uint64(c * ROW_STRIDE)
 
 _COL_MASKS = []
 for c in range(COLS):
     mask = np.uint64(0)
     for r in range(ROWS):
-        mask |= np.uint64(1) << np.uint64(r * (ROWS + 1) + c)
+        mask |= np.uint64(1) << np.uint64(r * ROW_STRIDE + c)
     _COL_MASKS.append(mask)
 
-# 用于快速获取列高度的数组
-_COL_SHIFT = np.array([c * (ROWS + 1) for c in range(COLS)], dtype=np.uint8)
-
-# 完整的棋盘掩码 (所有有效位)
 _FULL_BOARD_MASK = np.uint64(0)
 for c in range(COLS):
     _FULL_BOARD_MASK |= _COL_MASKS[c]
 
 
-# ── 获胜检测 (位运算) ───────────────────────────────────────
-
-def _has_won(board: np.uint64) -> bool:
-    """位运算检测四连: 对4个方向做位移匹配"""
-    # 水平 (右移1位)
-    b = board
-    b = b & (b >> np.uint64(1))
-    b = b & (b >> np.uint64(1))
-    b = b & (b >> np.uint64(1))
-    if b != 0:
-        return True
-
-    # 垂直 (右移 8位 = ROWS+1)
-    b = board
-    b = b & (b >> np.uint64(ROWS + 1))
-    b = b & (b >> np.uint64(ROWS + 1))
-    b = b & (b >> np.uint64(ROWS + 1))
-    if b != 0:
-        return True
-
-    # 对角线 \ (右移 9位)
-    b = board
-    b = b & (b >> np.uint64(ROWS + 2))
-    b = b & (b >> np.uint64(ROWS + 2))
-    b = b & (b >> np.uint64(ROWS + 2))
-    if b != 0:
-        return True
-
-    # 反对角线 / (右移 7位)
-    b = board
-    b = b & (b >> np.uint64(ROWS))
-    b = b & (b >> np.uint64(ROWS))
-    b = b & (b >> np.uint64(ROWS))
-    if b != 0:
-        return True
-
-    return False
-
-
-# ── 位置热图评估权重 ─────────────────────────────────────────
-
-# 默认热图 (对称的 6×7 权重表)
-# row0(top) → row5(bottom)
-_POSITION_HEATMAP = [
-    [3, 4, 5, 7, 5, 4, 3],
-    [4, 6, 8, 10, 8, 6, 4],
-    [5, 8, 11, 13, 11, 8, 5],
-    [5, 8, 11, 13, 11, 8, 5],
-    [4, 6, 8, 10, 8, 6, 4],
-    [3, 4, 5, 7, 5, 4, 3],
-]
-
-# 预计算热图为 42 长度的数组
-_POSITION_BONUS = np.array([_POSITION_HEATMAP[r][c] for r in range(ROWS) for c in range(COLS)], dtype=np.float32)
-
-
 # ── Bitboard 辅助函数 ───────────────────────────────────────
 
-def _list_to_bitboards(board_list: List[int], columns: int = COLS, rows: int = ROWS) -> Tuple[np.uint64, np.uint64, np.ndarray]:
-    """
-    将列表棋盘转换为 bitboard 表示。
-
-    Returns:
-        board_1: 玩家1 的 bitboard
-        board_2: 玩家2 的 bitboard
-        heights: 每列高度
-    """
-    b1 = np.uint64(0)
-    b2 = np.uint64(0)
-    heights = np.zeros(columns, dtype=np.uint8)
-
-    for c in range(columns):
-        for r in range(rows - 1, -1, -1):
-            v = board_list[r * columns + c]
-            if v == 0:
-                break
-            pos = r * (rows + 1) + c
-            if v == 1:
-                b1 |= np.uint64(1) << np.uint64(pos)
-            elif v == 2:
-                b2 |= np.uint64(1) << np.uint64(pos)
-            heights[c] += 1
-
+def _list_to_bitboards(board_list: List[int]) -> Tuple[np.uint64, np.uint64, np.ndarray]:
+    """将列表棋盘转换为 (b1, b2, heights)。"""
+    b1, b2 = _shared_list_to_bb(board_list)
+    heights = get_heights_from_list(board_list)
     return b1, b2, heights
 
 
-def _drop_piece_bb(
-    board: np.uint64,
-    heights: np.ndarray,
-    col: int,
-    rows: int = ROWS,
-) -> int:
-    """
-    在 bitboard 上落子 (计算落子后的 bit 位置)。
-
-    Returns:
-        落子位置编码 pos = row*(ROWS+1) + col (row: 0=顶, rows-1=底)
-    """
-    h = heights[col]
-    # 重力: 棋子落在该列最底部空位
-    row = rows - 1 - h
-    return row * (rows + 1) + col
+def _drop_piece_bb(heights: np.ndarray, col: int) -> int:
+    """返回在 col 落子的 bitboard 位置索引。"""
+    h = int(heights[col])
+    row = ROWS - 1 - h
+    return row * ROW_STRIDE + col
 
 
-def _get_valid_cols(heights: np.ndarray, rows: int = ROWS) -> List[int]:
-    """获取所有未满的列"""
-    return [c for c in range(COLS) if heights[c] < rows]
+def _get_valid_cols(heights: np.ndarray) -> List[int]:
+    """获取所有未满的列。"""
+    return [c for c in range(COLS) if heights[c] < ROWS]
 
 
-def _is_draw(heights: np.ndarray, rows: int = ROWS) -> bool:
-    """检测是否平局"""
-    return all(h >= rows for h in heights)
+def _is_draw(heights: np.ndarray) -> bool:
+    """检测是否平局。"""
+    return all(h >= ROWS for h in heights)
 
 
 # ── 威胁检测 ────────────────────────────────────────────────
 
-def _count_open_threats(board: np.uint64, rows: int = ROWS) -> int:
-    """
-    统计棋盘上有几个 "开三" 威胁 (3-in-a-row 且两端至少有一端空)
-    使用位运算快速识别。
-    """
+def _count_open_threats(board: np.uint64) -> int:
+    """统计棋盘上的 3-in-a-row 威胁数。"""
     threats = 0
-    # 水平方向
-    empty_board = np.uint64(0)  # 用不到，简化为...
 
-    # 2-in-a-row 检查
     b = board
     h2 = b & (b >> np.uint64(1))
-    # 3-in-a-row
     h3 = h2 & (b >> np.uint64(2))
 
-    # 垂直
     v = board
-    v2 = v & (v >> np.uint64(rows + 1))
-    v3 = v2 & (v >> np.uint64(rows + 1))
+    v2 = v & (v >> np.uint64(ROW_STRIDE))
+    v3 = v2 & (v >> np.uint64(ROW_STRIDE))
     threats += bin(h3).count("1") + bin(v3).count("1")
 
-    # 对角
     d1 = board
-    d1_2 = d1 & (d1 >> np.uint64(rows + 2))
-    d1_3 = d1_2 & (d1 >> np.uint64(rows + 2))
+    d1_2 = d1 & (d1 >> np.uint64(ROW_STRIDE + 1))
+    d1_3 = d1_2 & (d1 >> np.uint64(ROW_STRIDE + 1))
     threats += bin(d1_3).count("1")
 
     d2 = board
-    d2_2 = d2 & (d2 >> np.uint64(rows))
-    d2_3 = d2_2 & (d2 >> np.uint64(rows))
+    d2_2 = d2 & (d2 >> np.uint64(ROW_STRIDE - 1))
+    d2_3 = d2_2 & (d2 >> np.uint64(ROW_STRIDE - 1))
     threats += bin(d2_3).count("1")
 
     return threats
@@ -218,8 +120,6 @@ def evaluate(
     board_self: np.uint64,
     board_opp: np.uint64,
     heights: np.ndarray,
-    rows: int = ROWS,
-    cols: int = COLS,
 ) -> float:
     """
     评估当前局面 (从 board_self 玩家视角)。
@@ -231,68 +131,61 @@ def evaluate(
     """
     score = 0.0
 
-    # 直接检测获胜
-    if _has_won(board_self):
+    if has_won(board_self):
         return 10000.0
-    if _has_won(board_opp):
+    if has_won(board_opp):
         return -10000.0
 
     # 1. 窗口评分: 对每种"子长"做位运算统计
-    # self pieces
     b = board_self
-    # 1-in-a-row = 所有棋子
     count_1 = bin(b).count("1")
     score += WINDOW_WEIGHTS[0] * count_1
 
-    # 2-in-a-row
     h2 = b & (b >> np.uint64(1))
-    v2 = b & (b >> np.uint64(rows + 1))
-    d12 = b & (b >> np.uint64(rows + 2))
-    d22 = b & (b >> np.uint64(rows))
+    v2 = b & (b >> np.uint64(ROW_STRIDE))
+    d12 = b & (b >> np.uint64(ROW_STRIDE + 1))
+    d22 = b & (b >> np.uint64(ROW_STRIDE - 1))
     count_2 = bin(h2).count("1") + bin(v2).count("1") + bin(d12).count("1") + bin(d22).count("1")
     score += WINDOW_WEIGHTS[1] * count_2
 
-    # 3-in-a-row
     h3 = h2 & (b >> np.uint64(2))
-    v3 = v2 & (b >> np.uint64(rows + 1))
-    d13 = d12 & (b >> np.uint64(rows + 2))
-    d23 = d22 & (b >> np.uint64(rows))
+    v3 = v2 & (b >> np.uint64(ROW_STRIDE))
+    d13 = d12 & (b >> np.uint64(ROW_STRIDE + 1))
+    d23 = d22 & (b >> np.uint64(ROW_STRIDE - 1))
     count_3 = bin(h3).count("1") + bin(v3).count("1") + bin(d13).count("1") + bin(d23).count("1")
     score += WINDOW_WEIGHTS[2] * count_3
 
-    # opponent pieces
     b = board_opp
     count_1_opp = bin(b).count("1")
     score -= WINDOW_WEIGHTS[0] * count_1_opp
 
     h2 = b & (b >> np.uint64(1))
-    v2 = b & (b >> np.uint64(rows + 1))
-    d12 = b & (b >> np.uint64(rows + 2))
-    d22 = b & (b >> np.uint64(rows))
+    v2 = b & (b >> np.uint64(ROW_STRIDE))
+    d12 = b & (b >> np.uint64(ROW_STRIDE + 1))
+    d22 = b & (b >> np.uint64(ROW_STRIDE - 1))
     count_2_opp = bin(h2).count("1") + bin(v2).count("1") + bin(d12).count("1") + bin(d22).count("1")
     score -= WINDOW_WEIGHTS[1] * count_2_opp
 
     h3 = h2 & (b >> np.uint64(2))
-    v3 = v2 & (b >> np.uint64(rows + 1))
-    d13 = d12 & (b >> np.uint64(rows + 2))
-    d23 = d22 & (b >> np.uint64(rows))
+    v3 = v2 & (b >> np.uint64(ROW_STRIDE))
+    d13 = d12 & (b >> np.uint64(ROW_STRIDE + 1))
+    d23 = d22 & (b >> np.uint64(ROW_STRIDE - 1))
     count_3_opp = bin(h3).count("1") + bin(v3).count("1") + bin(d13).count("1") + bin(d23).count("1")
     score -= WINDOW_WEIGHTS[2] * count_3_opp
 
-    # 2. 位置热图加成
-    for c in range(min(cols, COLS)):
+    for c in range(COLS):
         h = heights[c]
-        for r in range(min(h, rows)):
-            pos = r * (rows + 1) + c
+        for r in range(min(h, ROWS)):
+            pos = r * ROW_STRIDE + c
             bit = np.uint64(1) << np.uint64(pos)
             if board_self & bit:
-                idx = r * cols + c
+                idx = r * COLS + c
                 if idx < 42:
-                    score += CENTER_BONUS * _POSITION_BONUS[idx] / 10.0
+                    score += CENTER_BONUS * float(HMAP_POS[idx]) / 10.0
             elif board_opp & bit:
-                idx = r * cols + c
+                idx = r * COLS + c
                 if idx < 42:
-                    score -= CENTER_BONUS * _POSITION_BONUS[idx] / 10.0
+                    score -= CENTER_BONUS * float(HMAP_POS[idx]) / 10.0
 
     # 3. 威胁评估
     threat_self = _count_open_threats(board_self)
@@ -305,10 +198,9 @@ def evaluate(
 
 # ── 着法排序 ─────────────────────────────────────────────────
 
-def _order_moves(valid_cols: List[int], tt_move: int = -1, cols: int = COLS) -> List[int]:
+def _order_moves(valid_cols: List[int], tt_move: int = -1) -> List[int]:
     """着法排序: 置换表最佳 → 中心列 → 两侧"""
-    center = cols // 2
-    # 如果置换表有推荐，排最前面
+    center = COLS // 2
     if tt_move >= 0 and tt_move in valid_cols:
         ordered = [tt_move]
         ordered += sorted(
@@ -343,14 +235,9 @@ class MinimaxBitboardAgent(BaseAgent):
     def select_action(self, observation: Any, configuration: Any) -> int:
         board_list = observation.board
         mark = observation.mark
-        columns = configuration.columns
-        rows = configuration.rows
-        inarow = configuration.inarow
-        opp_mark = 2 if mark == 1 else 1
 
-        b_self_raw, b_opp_raw, heights = _list_to_bitboards(board_list, columns, rows)
+        b_self_raw, b_opp_raw, heights = _list_to_bitboards(board_list)
 
-        # 交换标记: 始终以 "自己=b1" 的视角
         if mark == 1:
             b_self = b_self_raw
             b_opp = b_opp_raw
@@ -358,35 +245,31 @@ class MinimaxBitboardAgent(BaseAgent):
             b_self = b_opp_raw
             b_opp = b_self_raw
 
-        valid = _get_valid_cols(heights, rows)
+        valid = _get_valid_cols(heights)
         if not valid:
             self.stats["moves_made"] += 1
             return 0
 
-        # 快速检测: 直接获胜
         for col in valid:
-            pos = _drop_piece_bb(b_self, heights, col, rows)
+            pos = _drop_piece_bb(heights, col)
             b_new = b_self | (np.uint64(1) << np.uint64(pos))
-            if _has_won(b_new):
+            if has_won(b_new):
                 self.stats["moves_made"] += 1
                 return col
 
-        # 快速检测: 拦截对手
         for col in valid:
-            pos = _drop_piece_bb(b_opp, heights, col, rows)
+            pos = _drop_piece_bb(heights, col)
             b_new = b_opp | (np.uint64(1) << np.uint64(pos))
-            if _has_won(b_new):
+            if has_won(b_new):
                 self.stats["moves_made"] += 1
                 return col
 
-        # 开局库 (前几步固定走法)
         occupied = sum(heights)
         if occupied <= 1:
             self.stats["moves_made"] += 1
-            return columns // 2  # 开局走中心
+            return COLS // 2
 
-        # 迭代加深搜索
-        return self._iterative_deepen(b_self, b_opp, heights, valid, columns, rows)
+        return self._iterative_deepen(b_self, b_opp, heights, valid)
 
     def _iterative_deepen(
         self,
@@ -394,19 +277,16 @@ class MinimaxBitboardAgent(BaseAgent):
         b_opp: np.uint64,
         heights: np.ndarray,
         valid: List[int],
-        cols: int,
-        rows: int,
     ) -> int:
         """迭代加深: 从 depth=1 开始，逐步加深直到时间耗尽"""
         self.nodes_visited = 0
         self.search_start = time.perf_counter()
 
-        best_move = valid[0]  # fallback
+        best_move = valid[0]
         search_hash = compute_hash(b_self, b_opp)
 
-        # 自适应初始深度 (根据填充率)
         occupied = sum(heights)
-        total_cells = cols * rows
+        total_cells = COLS * ROWS
         if occupied < total_cells * 0.3:
             start_depth = 4
         elif occupied < total_cells * 0.6:
@@ -417,14 +297,14 @@ class MinimaxBitboardAgent(BaseAgent):
         for depth in range(start_depth, self.max_depth + 1):
             elapsed = (time.perf_counter() - self.search_start) * 1000
             if elapsed > self.time_budget_ms * 0.5:
-                break  # 时间不够完成下一层
+                break
 
             self.nodes_visited = 0
 
             score, move = self._negascout(
                 b_self, b_opp, heights, depth,
                 -math.inf, math.inf, 1.0,
-                cols, rows, search_hash,
+                search_hash,
             )
 
             # 只有未超时才算有效结果
@@ -450,21 +330,9 @@ class MinimaxBitboardAgent(BaseAgent):
         depth: int,
         alpha: float,
         beta: float,
-        color: float,  # 1.0 for self to move, -1.0 for opp to move
-        cols: int,
-        rows: int,
+        color: float,
         hash_key: np.uint64,
     ) -> Tuple[float, Optional[int]]:
-        """
-        NegaScout (Principal Variation Search).
-
-        color = 1.0: self to move (maximizing)
-        color = -1.0: opp to move (minimizing)
-
-        Returns:
-            (score, best_move)
-        """
-        # 时间检查
         if self.nodes_visited % 10000 == 0:
             elapsed = (time.perf_counter() - self.search_start) * 1000
             if elapsed > self.time_budget_ms:
@@ -473,7 +341,6 @@ class MinimaxBitboardAgent(BaseAgent):
 
         self.nodes_visited += 1
 
-        # 置换表查询
         tt_move = -1
         if self.tt is not None:
             tt_result = self.tt.probe(hash_key, depth, alpha, beta)
@@ -482,27 +349,23 @@ class MinimaxBitboardAgent(BaseAgent):
                 if tt_val >= beta or tt_val <= alpha:
                     return tt_val, tt_move
 
-        # 终端检测
-        valid = _get_valid_cols(heights, rows)
-
+        valid = _get_valid_cols(heights)
         if not valid:
-            return 0.0, None  # draw
+            return 0.0, None
 
         current_board = b_self if color > 0 else b_opp
-        if _has_won(current_board):
+        if has_won(current_board):
             return color * 10000.0, None
 
         if depth == 0:
-            # 评估局面
             score = evaluate(
                 b_self if color > 0 else b_opp,
                 b_opp if color > 0 else b_self,
-                heights, rows, cols,
+                heights,
             )
             return color * score, None
 
-        # 着法排序
-        ordered = _order_moves(valid, tt_move, cols)
+        ordered = _order_moves(valid, tt_move)
 
         best_score = -math.inf
         best_move = ordered[0]
@@ -510,57 +373,52 @@ class MinimaxBitboardAgent(BaseAgent):
         first_child = True
 
         for col in ordered:
-            row = rows - 1 - heights[col]
-            pos = row * (rows + 1) + col
+            row = ROWS - 1 - heights[col]
+            pos = row * ROW_STRIDE + col
             mask = np.uint64(1) << np.uint64(pos)
 
-            # 落子 (确保两个变量都被定义)
             if color > 0:
                 new_b_self = b_self | mask
                 new_b_opp = b_opp
-                has_won = _has_won(new_b_self)
+                player_won = has_won(new_b_self)
                 new_hash = hash_update(hash_key, pos, 1)
             else:
                 new_b_self = b_self
                 new_b_opp = b_opp | mask
-                has_won = _has_won(new_b_opp)
+                player_won = has_won(new_b_opp)
                 new_hash = hash_update(hash_key, pos, 2)
 
             heights[col] += 1
 
-            if has_won:
+            if player_won:
                 child_score = color * 10000.0
-                child_hash = new_hash
             else:
-                # NegaScout: 第一个子节点全窗口搜索，后续用 null window
                 if first_child:
                     child_score, _ = self._negascout(
                         b_self if color > 0 else new_b_self,
                         b_opp if color > 0 else new_b_opp,
                         heights, depth - 1,
                         -beta, -alpha, -color,
-                        cols, rows, new_hash,
+                        new_hash,
                     )
                     child_score = -child_score
                     first_child = False
                 else:
-                    # Null window search
                     child_score, _ = self._negascout(
                         b_self if color > 0 else new_b_self,
                         b_opp if color > 0 else new_b_opp,
                         heights, depth - 1,
                         -(alpha + 1), -alpha, -color,
-                        cols, rows, new_hash,
+                        new_hash,
                     )
                     child_score = -child_score
-                    # re-search if promising
                     if child_score > alpha and child_score < beta:
                         child_score, _ = self._negascout(
                             b_self if color > 0 else new_b_self,
                             b_opp if color > 0 else new_b_opp,
                             heights, depth - 1,
                             -beta, -child_score, -color,
-                            cols, rows, new_hash,
+                            new_hash,
                         )
                         child_score = -child_score
 

@@ -2,10 +2,9 @@
 超参优化模块 (Optuna)
 
 使用贝叶斯优化自动搜索最优的:
-  - 评估函数窗口权重 [w1, w2, w3, w4]
-  - 中心列加成
-  - 搜索深度分配
-  - MCTS 的 C 值和模拟次数
+  - 评估函数权重 (2-in-a-row, 3-in-a-row)
+  - 位置热图倍率
+  - 奇偶威胁倍率
 
 运行方式:
   python evaluate/optimize.py --trials 200
@@ -29,14 +28,13 @@ from evaluate.elo import EloEngine
 # ── 评估权重配置 ─────────────────────────────────────────────
 
 DEFAULT_WEIGHTS = {
-    "window_weights": [1.0, 10.0, 100.0, 1000.0],
-    "center_bonus": 2.0,
-    "depth_early": 4,
-    "depth_mid": 5,
-    "depth_late": 6,
+    "w2": 10.0,
+    "w3": 100.0,
+    "w_hmap": 0.3,
+    "w_odd_even": 80.0,
 }
 
-# 位置热图 (6行×7列, 对称)
+# 位置热图 (6行x7列, 对称)
 DEFAULT_POSITION_HEATMAP = [
     [3, 4, 5, 7, 5, 4, 3],
     [4, 6, 8, 10, 8, 6, 4],
@@ -60,7 +58,7 @@ class Optimizer:
     def objective(self, trial) -> float:
         """
         Optuna 目标函数。
-        返回相对于对手的胜率。
+        通过 monkey-patch submission.py 全局变量注入评估参数后运行对战。
         """
         try:
             import optuna
@@ -68,37 +66,28 @@ class Optimizer:
             print("[ERROR] optuna not installed. Run: pip install optuna")
             return 0.0
 
+        import submission as sub
+
         # ── 采样参数 ──
-        # 窗口权重
-        w1 = trial.suggest_float("w1", 0.5, 5.0, log=True)
         w2 = trial.suggest_float("w2", 5.0, 50.0, log=True)
         w3 = trial.suggest_float("w3", 50.0, 500.0, log=True)
-        w4 = trial.suggest_float("w4", 500.0, 5000.0, log=True)
-
-        # 中心列加成
-        center_bonus = trial.suggest_float("center_bonus", 0.0, 20.0)
-
-        # 搜索深度
-        depth_early = trial.suggest_int("depth_early", 2, 6)
-        depth_mid = trial.suggest_int("depth_mid", 3, 8)
-        depth_late = trial.suggest_int("depth_late", 4, 12)
-
-        # MCTS 参数
-        c_param = trial.suggest_float("mcts_c", 0.5, 3.0)
-        rollouts = trial.suggest_int("mcts_rollouts", 100, 5000, step=100)
+        w_hmap = trial.suggest_float("w_hmap", 0.05, 2.0, log=True)
+        w_odd_even = trial.suggest_float("w_odd_even", 20.0, 300.0, log=True)
 
         params = {
-            "window_weights": [w1, w2, w3, w4],
-            "center_bonus": center_bonus,
-            "depth_early": depth_early,
-            "depth_mid": depth_mid,
-            "depth_late": depth_late,
-            "mcts_c": c_param,
-            "mcts_rollouts": rollouts,
+            "w2": w2, "w3": w3,
+            "w_hmap": w_hmap, "w_odd_even": w_odd_even,
         }
 
-        # ── 构建带参数的 Agent (通过环境变量传递) ──
-        os.environ["CX_OPTIMIZE_PARAMS"] = json.dumps(params)
+        # ── 注入参数到 submission.py (monkey-patch) ──
+        old_w_score = sub._W_SCORE
+        old_w_threat = sub._W_THREAT
+        old_w_hmap = sub._W_HMAP
+        old_w_odd_even = sub._W_ODD_EVEN
+        sub._W_SCORE = float(w2)
+        sub._W_THREAT = float(w3)
+        sub._W_HMAP = float(w_hmap)
+        sub._W_ODD_EVEN = float(w_odd_even)
 
         # ── 运行对战 ──
         wins = 0
@@ -119,6 +108,12 @@ class Optimizer:
                 draws += 1
 
         win_rate = wins / self.games_per_trial if self.games_per_trial > 0 else 0
+
+        # ── 恢复原始值 ──
+        sub._W_SCORE = old_w_score
+        sub._W_THREAT = old_w_threat
+        sub._W_HMAP = old_w_hmap
+        sub._W_ODD_EVEN = old_w_odd_even
 
         # 记录
         self.history.append({
@@ -177,18 +172,14 @@ class Optimizer:
 
         with open(weights_path, "w", encoding="utf-8") as f:
             f.write('"""自动优化的评估权重 (由 evaluate/optimize.py 生成)"""\n\n')
-            f.write("# 窗口权重: [1-in-row, 2-in-row, 3-in-row, 4-in-row]\n')
-            f.write(f"WINDOW_WEIGHTS = {params.get('window_weights', [1, 10, 100, 1000])}\n\n")
-            f.write(f"CENTER_BONUS = {params.get('center_bonus', 2.0)}\n\n")
-            f.write("# 搜索深度: early / mid / late\n")
-            f.write(f"DEPTH_EARLY = {params.get('depth_early', 4)}\n")
-            f.write(f"DEPTH_MID = {params.get('depth_mid', 5)}\n")
-            f.write(f"DEPTH_LATE = {params.get('depth_late', 6)}\n\n")
-            f.write("# MCTS 参数\n")
-            f.write(f"MCTS_C = {params.get('mcts_c', 1.414)}\n")
-            f.write(f"MCTS_ROLLOUTS = {params.get('mcts_rollouts', 800)}\n")
-            f.write(f"MCTS_TIME_BUDGET_MS = 1900\n\n")
-            f.write("# 位置热图 (6行×7列, 对称)\n")
+            f.write("# 评估权重: 2-in-a-row, 3-in-a-row\n")
+            f.write(f"W_SCORE = {params.get('w2', 10.0)}\n")
+            f.write(f"W_THREAT = {params.get('w3', 100.0)}\n\n")
+            f.write("# 位置热图倍率\n")
+            f.write(f"W_HMAP = {params.get('w_hmap', 0.3)}\n\n")
+            f.write("# 奇偶威胁倍率\n")
+            f.write(f"W_ODD_EVEN = {params.get('w_odd_even', 80.0)}\n\n")
+            f.write("# 位置热图 (6行x7列, 对称)\n")
             f.write("POSITION_HEATMAP = [\n")
             f.write("    [3, 4, 5, 7, 5, 4, 3],\n")
             f.write("    [4, 6, 8, 10, 8, 6, 4],\n")
@@ -207,10 +198,10 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="ConnectX Hyperparameter Optimization")
-    parser.add_argument("--trials", type=int, default=200, help="Optuna 试验次数")
-    parser.add_argument("--games", type=int, default=50, help="每次试验的对局数")
-    parser.add_argument("--opponent", type=str, default="negamax", help="对手")
-    parser.add_argument("--timeout", type=int, default=3600, help="总超时 (秒)")
+    parser.add_argument("--trials", type=int, default=200, help="Optuna trial count")
+    parser.add_argument("--games", type=int, default=50, help="Games per trial")
+    parser.add_argument("--opponent", type=str, default="negamax", help="Opponent agent")
+    parser.add_argument("--timeout", type=int, default=3600, help="Total timeout (seconds)")
 
     args = parser.parse_args()
 

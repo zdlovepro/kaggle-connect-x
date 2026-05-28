@@ -13,3 +13,4 @@ ConnectX 效果评估框架
 from .elo import EloEngine
 from .tournament import TournamentRunner, BenchmarkRunner
 from .report import Reporter
+from .td_learn import TDTrainer
