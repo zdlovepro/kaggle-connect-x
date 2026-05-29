@@ -30,16 +30,24 @@ import os
 import random
 import sys
 import time
+from pathlib import Path
 from typing import List, Tuple, Optional
 
 import numpy as np
+
+# Ensure project root is importable when running `python evaluate/td_learn.py`.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from connectx.bitboard import (
     COLS, ROWS, INAROW, ROW_STRIDE,
     has_won, list_to_bitboards,
     get_heights_from_list, get_heights, valid_cols, drop_pos,
-    HEATMAP, HMAP_POS,
+    HEATMAP, HMAP_POS, COL0_MASK, COL6_MASK,
 )
+try:
+    from evaluate.build_submission import BuildConfig, build_submission_with_config
+except Exception:
+    from build_submission import BuildConfig, build_submission_with_config
 
 
 # ── 特征提取 ─────────────────────────────────────────────────
@@ -66,8 +74,8 @@ def extract_features(b_self: np.uint64, b_opp: np.uint64,
 
     for idx, b in enumerate([b_self, b_opp]):
         base = 1 if idx == 0 else 3
-        b_nor = b & ~_COL6_MASK
-        b_nol = b & ~_COL0_MASK
+        b_nor = b & ~COL6_MASK
+        b_nol = b & ~COL0_MASK
 
         h2 = b_nor & (b >> np.uint64(1))
         v2 = b & (b >> np.uint64(ROW_STRIDE))
@@ -275,25 +283,31 @@ def td_update(weights: np.ndarray, trajectory: List[dict],
 
 # ── 评估 (通过 kaggle_environments) ───────────────────────────
 
-def _inject_weights_into_submission(weights: np.ndarray):
-    """将 TD 权重注入 submission.py 模块的全局变量。"""
-    import submission as sub
-    # 重新计算标量权重: 从权重向量中估算对应的评估权重
-    sub._W_SCORE = float(max(0.1, abs(weights[1]) * 170))
-    sub._W_THREAT = float(max(1.0, abs(weights[2]) * 170))
-    # 更新热图倍数
-    sub.HMAP_POS = HMAP_POS * float(max(0.0, weights[5] * 500))
-    # 标记
-    if not hasattr(sub, '_TD_TRAINED'):
-        sub._TD_TRAINED = True
+def _build_td_eval_submission(weights: np.ndarray, output_path: Path) -> str:
+    """Build a temporary single-file submission using TD feature weights."""
+    root = Path(__file__).resolve().parents[1]
+    cfg = BuildConfig(
+        w_score=float(max(0.1, abs(weights[1]) * 170.0)),
+        w_threat=float(max(1.0, abs(weights[2]) * 170.0)),
+        w_hmap=0.3,
+        w_odd_even=80.0,
+        heatmap=HEATMAP.astype(float).tolist(),
+        td_weights=[float(v) for v in weights],
+        source="td_learn.evaluate_against",
+    )
+    build_submission_with_config(root / "submission.py", output_path, cfg)
+    return str(output_path)
 
 
 def evaluate_against(weights: np.ndarray, opponent: str = "random",
                      num_games: int = 100) -> dict:
-    """使用当前权重 + submission.py 的 NegaScout 搜索评估。"""
+    """Evaluate TD weights via the same built single-file path used for submission."""
     from kaggle_environments import make
 
-    _inject_weights_into_submission(weights)
+    temp_submission = Path(__file__).with_name(
+        f"_tmp_td_eval_submission_{os.getpid()}.py"
+    )
+    agent_path = _build_td_eval_submission(weights, temp_submission)
 
     wins = losses = draws = 0
     half = num_games // 2
@@ -301,7 +315,7 @@ def evaluate_against(weights: np.ndarray, opponent: str = "random",
     for i in range(num_games):
         if i < half:
             env = make("connectx", debug=False)
-            env.run(["submission.py", opponent])
+            env.run([agent_path, opponent])
             r0 = env.steps[-1][0].reward or 0
             r1 = env.steps[-1][1].reward or 0
             if r0 == 1:
@@ -312,7 +326,7 @@ def evaluate_against(weights: np.ndarray, opponent: str = "random",
                 draws += 1
         else:
             env = make("connectx", debug=False)
-            env.run([opponent, "submission.py"])
+            env.run([opponent, agent_path])
             r0 = env.steps[-1][0].reward or 0
             r1 = env.steps[-1][1].reward or 0
             if r1 == 1:
@@ -321,6 +335,9 @@ def evaluate_against(weights: np.ndarray, opponent: str = "random",
                 losses += 1
             else:
                 draws += 1
+
+    if temp_submission.exists():
+        temp_submission.unlink()
 
     return {'wins': wins, 'losses': losses, 'draws': draws,
             'win_rate': wins / num_games, 'games': num_games}

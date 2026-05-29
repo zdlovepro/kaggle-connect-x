@@ -14,15 +14,14 @@
 
 import os
 import sys
-import json
-import math
-from typing import Dict, Any, List
+from pathlib import Path
+from typing import Dict, List
 
 # 将项目根目录加入 Python path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from evaluate.tournament import run_single_game, TournamentRunner
-from evaluate.elo import EloEngine
+from evaluate.tournament import run_single_game
+from evaluate.build_submission import BuildConfig, build_submission_with_config
 
 
 # ── 评估权重配置 ─────────────────────────────────────────────
@@ -57,8 +56,7 @@ class Optimizer:
 
     def objective(self, trial) -> float:
         """
-        Optuna 目标函数。
-        通过 monkey-patch submission.py 全局变量注入评估参数后运行对战。
+        Optuna objective evaluated through a temporary built single-file agent.
         """
         try:
             import optuna
@@ -66,7 +64,6 @@ class Optimizer:
             print("[ERROR] optuna not installed. Run: pip install optuna")
             return 0.0
 
-        import submission as sub
 
         # ── 采样参数 ──
         w2 = trial.suggest_float("w2", 5.0, 50.0, log=True)
@@ -79,26 +76,33 @@ class Optimizer:
             "w_hmap": w_hmap, "w_odd_even": w_odd_even,
         }
 
-        # ── 注入参数到 submission.py (monkey-patch) ──
-        old_w_score = sub._W_SCORE
-        old_w_threat = sub._W_THREAT
-        old_w_hmap = sub._W_HMAP
-        old_w_odd_even = sub._W_ODD_EVEN
-        sub._W_SCORE = float(w2)
-        sub._W_THREAT = float(w3)
-        sub._W_HMAP = float(w_hmap)
-        sub._W_ODD_EVEN = float(w_odd_even)
+        # Build a trial-specific single-file agent.
+        temp_submission = Path(__file__).with_name(
+            f"_tmp_optuna_trial_{os.getpid()}_{trial.number}.py"
+        )
+        root = Path(__file__).resolve().parents[1]
+        cfg = BuildConfig(
+            w_score=float(w2),
+            w_threat=float(w3),
+            w_hmap=float(w_hmap),
+            w_odd_even=float(w_odd_even),
+            heatmap=[row[:] for row in DEFAULT_POSITION_HEATMAP],
+            td_weights=None,
+            source="optuna.objective",
+        )
+        build_submission_with_config(root / "submission.py", temp_submission, cfg)
+        agent_path = str(temp_submission)
 
-        # ── 运行对战 ──
+        # Run head-to-head games with seat swap.
         wins = 0
         losses = 0
         draws = 0
 
         for i in range(self.games_per_trial):
             if i < self.games_per_trial // 2:
-                r1, r2 = run_single_game("submission.py", self.opponent)
+                r1, r2 = run_single_game(agent_path, self.opponent)
             else:
-                r2, r1 = run_single_game(self.opponent, "submission.py")
+                r2, r1 = run_single_game(self.opponent, agent_path)
 
             if r1 == 1:
                 wins += 1
@@ -109,11 +113,10 @@ class Optimizer:
 
         win_rate = wins / self.games_per_trial if self.games_per_trial > 0 else 0
 
-        # ── 恢复原始值 ──
-        sub._W_SCORE = old_w_score
-        sub._W_THREAT = old_w_threat
-        sub._W_HMAP = old_w_hmap
-        sub._W_ODD_EVEN = old_w_odd_even
+        # Cleanup temporary trial file.
+        if temp_submission.exists():
+            temp_submission.unlink()
+
 
         # 记录
         self.history.append({

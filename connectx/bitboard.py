@@ -22,6 +22,10 @@ for r in range(ROWS):
     _COL0_MASK |= np.uint64(1) << np.uint64(r * ROW_STRIDE)
     _COL6_MASK |= np.uint64(1) << np.uint64(r * ROW_STRIDE + (COLS - 1))
 
+# Public aliases so training/evaluation code can share one bitboard source.
+COL0_MASK = _COL0_MASK
+COL6_MASK = _COL6_MASK
+
 # ── 位置热图 ────────────────────────────────────────────────
 
 HEATMAP = np.array([
