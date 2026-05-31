@@ -11,7 +11,7 @@ Key improvements over baseline Minimax:
   - ZobristTT: 1M-entry depth-prioritized transposition table
   - Killers:   2 killer slots per depth for better move ordering
   - Odd/Even:  Connect-4-specific threat row analysis
-  - Book:      8-ply opening book from known theory
+  - Book:      12-ply opening book from known theory lines
   - Time:      Smart iterative deepening with adaptive depth
 
 Time complexity: O(b^(d/2)) with effective pruning
@@ -729,44 +729,98 @@ def _negascout(b_self, b_opp, heights, depth, alpha, beta, color, hash_key, mirr
 #  Opening Book
 # ═══════════════════════════════════════════════════════════════
 
+_BOOK_MAX_PLY = 12
+_BOOK_LINE_STRINGS = (
+    # 3-4 opening and common expert counters (trimmed to first 8-12 plies).
+    "D1 d2 D3 d4 D5 e1 E2 e3 E4 b1 B2 b3",
+    "D1 d2 D3 b1 B2 b3 B4 f1 F2 f3 F4 b5",
+    "D1 d2 D3 c1 C2 c3 C4 g1 G2 g3 E1 e2",
+    "D1 e1 A1 d2 D3 d4 B1 c1 C2 c3 E2 c4",
+    "D1 e1 B1 e2 B2 b3 D2 e3 E4 a1 D3 d4",
+    "D1 e1 B1 b2 A1 c1 C2 c3 C4 e2 C5 a2",
+    "D1 e1 B1 e2 A1 c1 B2 b3 C2 c3 D2 a2",
+    # Classic textbook expert examples (helps stabilize common practical lines).
+    "D1 d2 D3 c1 C2 c3 D4 d5 G1 e1 G2 g3",
+    "D1 e1 A1 c1 E2 e3 C2 c3 C4 f1 B2 a1",
+)
+
+
+def _book_parse_cols(line_str):
+    cols = []
+    for tok in line_str.split():
+        col = ord(tok[0].lower()) - ord("a")
+        if 0 <= col < COLS:
+            cols.append(col)
+    return cols
+
+
+def _book_mirror_board(board):
+    mirrored = [0] * (ROWS * COLS)
+    for r in range(ROWS):
+        base = r * COLS
+        for c in range(COLS):
+            mirrored[base + _MIRROR_COL[c]] = board[base + c]
+    return mirrored
+
+
+def _book_drop(board, heights, col, mark):
+    if col < 0 or col >= COLS or heights[col] >= ROWS:
+        return False
+    row = ROWS - 1 - heights[col]
+    board[row * COLS + col] = mark
+    heights[col] += 1
+    return True
+
+
+def _book_register_line(book, cols):
+    board = [0] * (ROWS * COLS)
+    heights = [0] * COLS
+    to_move = 1
+    for col in cols:
+        key = (tuple(board), to_move)
+        if key not in book:
+            book[key] = col
+
+        mirrored_board = _book_mirror_board(board)
+        mirrored_col = _mirror_col(col)
+        mirrored_key = (tuple(mirrored_board), to_move)
+        if mirrored_key not in book:
+            book[mirrored_key] = mirrored_col
+
+        if not _book_drop(board, heights, col, to_move):
+            break
+        to_move = 2 if to_move == 1 else 1
+
+
+def _build_opening_book():
+    book = {}
+    for line in _BOOK_LINE_STRINGS:
+        _book_register_line(book, _book_parse_cols(line))
+    return book
+
+
+_OPENING_BOOK = _build_opening_book()
+
+
 def _book_move(board_list, valid, mark):
-    """
-    Hardcoded opening book (~8 ply) from Connect 4 theory.
-
-    Theory:
-      - P1's strongest opening: D1 (col 3).
-      - P2's only drawing response to D1: D2 (col 3).
-      - P1's 3rd move after D1-D2: D3 (col 3) maintains advantage.
-      - If P1 goes C1 (col 2), P2 should take center or play D2.
-    """
     piece_count = sum(1 for v in board_list if v != 0)
-    if piece_count >= 8:
-        return None  # Out of book range
+    if piece_count > _BOOK_MAX_PLY:
+        return None
 
-    if mark == 1:
-        if piece_count == 0:
-            return 3  # D1: always open center
-        if piece_count == 2:
-            # Find opponent's first move (bottom-most piece)
-            opp_col = None
-            for c in range(COLS):
-                if board_list[5 * COLS + c] != 0:
-                    opp_col = c
-                    break
-            if opp_col == 3:
-                return 3 if 3 in valid else (2 if 2 in valid else 4)
-            elif opp_col in (2, 4):
-                return 3 if 3 in valid else (COLS // 2)
-            else:
-                return 3
-        if piece_count == 4:
-            return 3 if 3 in valid else (2 if 2 in valid else 4)
+    # Primary: explicit expert lines + mirrored branches.
+    key = (tuple(board_list), mark)
+    move = _OPENING_BOOK.get(key)
+    if move is not None and move in valid:
+        return move
 
-    if mark == 2:
-        if piece_count == 1:
-            return 3  # Respond to center with center
-        if piece_count == 3:
-            return 3 if 3 in valid else (2 if 2 in valid else 4)
+    # Fallback: conservative center control in very early game.
+    if piece_count == 0 and mark == 1:
+        return 3 if 3 in valid else valid[0]
+    if piece_count <= 4 and 3 in valid:
+        return 3
+    if piece_count <= 8:
+        if 2 in valid or 4 in valid:
+            return 2 if 2 in valid else 4
 
     return None
 
@@ -852,7 +906,7 @@ def agent(observation, configuration):
     Strategy:
       1. Immediate win
       2. Block opponent win
-      3. Opening book (~8 ply)
+      3. Opening book (~12 ply)
       4. Iterative deepening NegaScout search
     """
     board_list = observation.board
