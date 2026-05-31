@@ -17,6 +17,14 @@ from typing import Any, List, Optional
 
 import numpy as np
 
+from azlite.board import (
+    center_first_order,
+    find_immediate_block,
+    find_immediate_win,
+    legal_moves as az_legal_moves,
+    obs_board_to_numpy,
+    ordered_legal_moves,
+)
 from connectx.bitboard import (
     COLS, ROWS, INAROW, ROW_STRIDE,
     has_won, list_to_bitboards, get_heights_from_list,
@@ -66,32 +74,29 @@ class MCTSAgent(BaseAgent):
     def select_action(self, observation, configuration):
         board_list = list(observation.board)
         mark = observation.mark
+        board_np = obs_board_to_numpy(board_list)
         b1, b2 = list_to_bitboards(board_list)
         heights = get_heights_from_list(board_list)
 
-        valid = valid_cols(heights)
+        valid = az_legal_moves(board_np)
         if not valid:
             self.stats["moves_made"] += 1
             return 0
 
-        b_self = b1 if mark == 1 else b2
-        b_opp = b2 if mark == 1 else b1
+        opp = 2 if mark == 1 else 1
+        win_col = find_immediate_win(board_np, mark)
+        if win_col is not None:
+            self.stats["moves_made"] += 1
+            return win_col
 
-        for col in valid:
-            pos = drop_pos(heights, col)
-            if has_won(b_self | (np.uint64(1) << np.uint64(pos))):
-                self.stats["moves_made"] += 1
-                return col
-
-        for col in valid:
-            pos = drop_pos(heights, col)
-            if has_won(b_opp | (np.uint64(1) << np.uint64(pos))):
-                self.stats["moves_made"] += 1
-                return col
+        block_col = find_immediate_block(board_np, mark, opp)
+        if block_col is not None:
+            self.stats["moves_made"] += 1
+            return block_col
 
         root = MCTSNode(
             b1=b1, b2=b2, heights=heights.copy(), mark=mark,
-            unvisited=self._order_moves(valid),
+            unvisited=ordered_legal_moves(board_np),
         )
         return self._search(root)
 
@@ -114,7 +119,8 @@ class MCTSAgent(BaseAgent):
             self.simulations += 1
 
         if not root.children:
-            return COLS // 2
+            fallback = self._order_moves(valid_cols(root.heights))
+            return fallback[0] if fallback else 0
 
         best_action = max(
             root.children.items(),
@@ -236,8 +242,8 @@ class MCTSAgent(BaseAgent):
         return random.choice(candidates[:min(3, len(candidates))])
 
     def _order_moves(self, valid):
-        center = COLS // 2
-        return sorted(valid, key=lambda c: abs(c - center))
+        valid_set = set(valid)
+        return [c for c in center_first_order(COLS) if c in valid_set]
 
 
 # ── Factory ──────────────────────────────────────────────────
