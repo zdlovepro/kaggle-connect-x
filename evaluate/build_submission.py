@@ -123,7 +123,14 @@ def _load_td_config(path: Path) -> Dict[str, Any]:
     data = _load_python_artifact(path)
     if not data:
         return {}
-    return {"td_weights": data.get("TD_WEIGHTS")}
+    return {
+        "td_weights": data.get("TD_WEIGHTS"),
+        "w_score": data.get("W_SCORE"),
+        "w_threat": data.get("W_THREAT"),
+        "w_hmap": data.get("W_HMAP"),
+        "w_odd_even": data.get("W_ODD_EVEN"),
+        "heatmap": data.get("POSITION_HEATMAP"),
+    }
 
 
 def _fmt_number(value: float) -> str:
@@ -208,22 +215,40 @@ def resolve_build_config(
     td_weights = None
     if td_data:
         td_weights = _parse_td_weights(td_data.get("td_weights"))
+    td_enabled = False
 
     if profile == "td":
         if td_weights is None:
             raise ValueError(f"TD profile requested but no TD_WEIGHTS in {td_weights_path}")
         config.td_weights = td_weights
+        td_enabled = True
         sources.append(str(td_weights_path))
     elif profile == "optuna":
         config.td_weights = None
     elif profile == "auto":
         if td_weights is not None:
             config.td_weights = td_weights
+            td_enabled = True
             sources.append(str(td_weights_path))
         else:
             config.td_weights = None
     else:
         raise ValueError(f"Unsupported profile: {profile}")
+
+    # In TD-enabled builds, keep scalar fields aligned with the same TD artifact
+    # when available (fallback stays on previously loaded/default values).
+    if td_enabled and td_data:
+        if td_data.get("w_score") is not None:
+            config.w_score = _to_float(td_data.get("w_score"), config.w_score)
+        if td_data.get("w_threat") is not None:
+            config.w_threat = _to_float(td_data.get("w_threat"), config.w_threat)
+        if td_data.get("w_hmap") is not None:
+            config.w_hmap = _to_float(td_data.get("w_hmap"), config.w_hmap)
+        if td_data.get("w_odd_even") is not None:
+            config.w_odd_even = _to_float(td_data.get("w_odd_even"), config.w_odd_even)
+        td_heatmap = _parse_heatmap(td_data.get("heatmap"))
+        if td_heatmap is not None:
+            config.heatmap = td_heatmap
 
     config.source = ", ".join(sources)
     return config

@@ -31,7 +31,7 @@ import random
 import sys
 import time
 from pathlib import Path
-from typing import List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional
 
 import numpy as np
 
@@ -45,9 +45,13 @@ from connectx.bitboard import (
     HEATMAP, HMAP_POS, COL0_MASK, COL6_MASK,
 )
 try:
-    from evaluate.build_submission import BuildConfig, build_submission_with_config
+    from evaluate.build_submission import (
+        BuildConfig,
+        build_submission,
+        build_submission_with_config,
+    )
 except Exception:
-    from build_submission import BuildConfig, build_submission_with_config
+    from build_submission import BuildConfig, build_submission, build_submission_with_config
 
 
 # ── 特征提取 ─────────────────────────────────────────────────
@@ -343,6 +347,89 @@ def evaluate_against(weights: np.ndarray, opponent: str = "random",
             'win_rate': wins / num_games, 'games': num_games}
 
 
+def _normalize_eval_mix(eval_mix: List[Tuple[str, float]]) -> List[Tuple[str, float]]:
+    """Normalize opponent weights to sum to 1.0 and drop non-positive entries."""
+    cleaned: List[Tuple[str, float]] = []
+    for opp, weight in eval_mix:
+        try:
+            w = float(weight)
+        except (TypeError, ValueError):
+            continue
+        if w > 0:
+            cleaned.append((str(opp), w))
+    if not cleaned:
+        return [("random", 1.0)]
+    s = sum(w for _, w in cleaned)
+    if s <= 0:
+        return [("random", 1.0)]
+    return [(opp, w / s) for opp, w in cleaned]
+
+
+def _allocate_eval_games(total_games: int, eval_mix: List[Tuple[str, float]]) -> Dict[str, int]:
+    """
+    Allocate total evaluation games to each opponent by normalized weight.
+    Uses largest-remainder rounding to keep total exactly total_games.
+    """
+    if total_games <= 0:
+        return {}
+
+    mix = _normalize_eval_mix(eval_mix)
+    ideal = [(opp, total_games * w) for opp, w in mix]
+    base = {opp: int(v) for opp, v in ideal}
+    used = sum(base.values())
+    remain = total_games - used
+
+    if remain > 0:
+        order = sorted(ideal, key=lambda x: (x[1] - int(x[1])), reverse=True)
+        i = 0
+        while remain > 0 and order:
+            opp = order[i % len(order)][0]
+            base[opp] += 1
+            remain -= 1
+            i += 1
+
+    # Ensure each allocated bucket has enough games for seat-swap fairness.
+    # If a bucket gets 1 game, move one game from the largest bucket.
+    ones = [opp for opp, g in base.items() if g == 1]
+    for opp in ones:
+        donor = max(base.items(), key=lambda kv: kv[1])[0]
+        if donor != opp and base[donor] >= 3:
+            base[donor] -= 1
+            base[opp] += 1
+
+    # Prune zeros.
+    return {opp: g for opp, g in base.items() if g > 0}
+
+
+def evaluate_mixed(weights: np.ndarray,
+                   eval_mix: List[Tuple[str, float]],
+                   total_games: int = 100) -> dict:
+    """
+    Evaluate weights against multiple opponents and return a weighted score.
+    score = sum(weight_i * win_rate_i)
+    """
+    mix = _normalize_eval_mix(eval_mix)
+    plan = _allocate_eval_games(total_games, mix)
+    if not plan:
+        return {"score": 0.0, "details": {}}
+
+    weight_map = {opp: w for opp, w in mix}
+    details: Dict[str, dict] = {}
+    score = 0.0
+    norm = 0.0
+
+    for opp, games in plan.items():
+        result = evaluate_against(weights, opponent=opp, num_games=games)
+        details[opp] = result
+        w = weight_map.get(opp, 0.0)
+        score += w * float(result["win_rate"])
+        norm += w
+
+    if norm <= 0.0:
+        return {"score": 0.0, "details": details}
+    return {"score": score / norm, "details": details}
+
+
 # ── 断点加载 ──────────────────────────────────────────────────
 
 def load_td_weights(filepath: str) -> np.ndarray:
@@ -479,14 +566,18 @@ class TDTrainer:
               epsilon_end: float = 0.02, eval_interval: int = 5000,
               eval_games: int = 50, verbose: bool = True,
               alpha_decay: float = 0.9999,
-              checkpoint_path: Optional[str] = None):
+              checkpoint_path: Optional[str] = None,
+              eval_mix: Optional[List[Tuple[str, float]]] = None):
         """
         alpha_decay: per-episode learning rate multiplier (1.0=no decay).
         checkpoint_path: 每轮 eval 后自动保存 checkpoint (None=不保存).
+        eval_mix: [(opponent, weight), ...] for model selection.
         """
         start_time = time.perf_counter()
         start_ep = self.episode
         lr = alpha
+        mix = _normalize_eval_mix(eval_mix or [("random", 0.35), ("negamax", 0.65)])
+        eval_count = 0
         if self.episode > 0:
             lr = alpha * (alpha_decay ** self.episode)
 
@@ -499,17 +590,27 @@ class TDTrainer:
             self.weights = td_update(self.weights, trajectory, lr, lam)
             self.episode += 1
 
-            if (ep + 1) % eval_interval == 0:
-                result = evaluate_against(
-                    self.weights, opponent="random", num_games=eval_games
+            if eval_games > 0 and eval_interval > 0 and (ep + 1) % eval_interval == 0:
+                eval_count += 1
+                eval_result = evaluate_mixed(
+                    self.weights,
+                    eval_mix=mix,
+                    total_games=eval_games,
                 )
-                wr = result['win_rate']
+                wr = float(eval_result['score'])
                 elapsed = time.perf_counter() - start_time
 
                 if verbose:
+                    details = eval_result.get('details', {})
+                    wr_random = details.get('random', {}).get('win_rate')
+                    wr_negamax = details.get('negamax', {}).get('win_rate')
+                    wr_random_s = f"{wr_random*100:.0f}%" if wr_random is not None else "N/A"
+                    wr_negamax_s = f"{wr_negamax*100:.0f}%" if wr_negamax is not None else "N/A"
                     print(f"  Ep {start_ep + ep + 1:>6d}/{start_ep + num_episodes}  "
                           f"ε={epsilon:.3f}  "
-                          f"WR(random)={wr*100:.0f}%  "
+                          f"Score={wr*100:.1f}%  "
+                          f"WR(random)={wr_random_s}  "
+                          f"WR(negamax)={wr_negamax_s}  "
                           f"t={elapsed:.0f}s  "
                           f"w={self.weights[1:4].round(4)}")
 
@@ -524,13 +625,19 @@ class TDTrainer:
                                     self.episode, self.best_win_rate,
                                     self.history, checkpoint_path)
 
-        if self.best_win_rate > 0:
+        if eval_count == 0:
+            # No evaluation phase: keep final training weights as best checkpoint.
+            self.best_weights = self.weights.copy()
+        elif self.best_win_rate > 0:
             self.weights = self.best_weights.copy()
 
         if verbose:
             total_ep = start_ep + num_episodes
-            print(f"\nDone: {start_ep}→{total_ep} episodes, "
-                  f"best WR(random)={self.best_win_rate*100:.1f}%")
+            if eval_count == 0:
+                print(f"\nDone: {start_ep}→{total_ep} episodes, no evaluation phase.")
+            else:
+                print(f"\nDone: {start_ep}→{total_ep} episodes, "
+                      f"best Score={self.best_win_rate*100:.1f}%")
 
         return self.weights
 
@@ -542,6 +649,28 @@ class TDTrainer:
 
 
 # ── CLI ───────────────────────────────────────────────────────
+
+
+def parse_eval_mix(eval_mix_str: str) -> List[Tuple[str, float]]:
+    """
+    Parse --eval-mix string like:
+      "random:0.35,negamax:0.65"
+    """
+    parts = [p.strip() for p in (eval_mix_str or "").split(",") if p.strip()]
+    if not parts:
+        return [("random", 1.0)]
+    result: List[Tuple[str, float]] = []
+    for p in parts:
+        if ":" in p:
+            name, w = p.split(":", 1)
+            try:
+                weight = float(w.strip())
+            except ValueError:
+                continue
+            result.append((name.strip(), weight))
+        else:
+            result.append((p, 1.0))
+    return _normalize_eval_mix(result)
 
 if __name__ == "__main__":
     import argparse
@@ -556,9 +685,27 @@ if __name__ == "__main__":
     parser.add_argument("--lam", type=float, default=0.3)
     parser.add_argument("--eval-interval", type=int, default=5000)
     parser.add_argument("--eval-games", type=int, default=100)
+    parser.add_argument(
+        "--eval-mix",
+        type=str,
+        default="random:0.35,negamax:0.65",
+        help="Model-selection opponents and weights, e.g. random:0.35,negamax:0.65",
+    )
     parser.add_argument("--epsilon-start", type=float, default=0.3)
     parser.add_argument("--epsilon-end", type=float, default=0.02)
     parser.add_argument("--output", type=str, default="agents/td_weights.py")
+    parser.add_argument(
+        "--build-profile",
+        choices=("none", "auto", "optuna", "td"),
+        default="td",
+        help="Build final submission after training (default: td).",
+    )
+    parser.add_argument(
+        "--build-output",
+        type=str,
+        default="submission.py",
+        help="Built single-file submission path.",
+    )
     parser.add_argument("--no-eval", action="store_true")
     parser.add_argument("--resume", action="store_true",
                         help="从 --output 指定的文件恢复权重并继续训练")
@@ -585,9 +732,12 @@ if __name__ == "__main__":
 
     if trainer.episode > 0:
         print(f"  Resuming from episode {trainer.episode}, "
-              f"best WR={trainer.best_win_rate*100:.1f}%")
+              f"best Score={trainer.best_win_rate*100:.1f}%")
     else:
         print(f"\nInitial weights: {trainer.weights.round(4).tolist()}\n")
+
+    eval_mix = parse_eval_mix(args.eval_mix)
+    print(f"  Eval mix: {', '.join(f'{n}:{w:.2f}' for n, w in eval_mix)}")
 
     trainer.train(
         num_episodes=args.episodes,
@@ -599,9 +749,27 @@ if __name__ == "__main__":
         eval_games=args.eval_games if not args.no_eval else 0,
         verbose=True,
         checkpoint_path=args.output,
+        eval_mix=eval_mix,
     )
 
     trainer.save(args.output)
+
+    if args.build_profile != "none":
+        root = Path(__file__).resolve().parents[1]
+        build_output = Path(args.build_output)
+        if not build_output.is_absolute():
+            build_output = root / build_output
+        td_weights_path = Path(args.output)
+        if not td_weights_path.is_absolute():
+            td_weights_path = root / td_weights_path
+        cfg = build_submission(
+            profile=args.build_profile,
+            output_path=build_output,
+            td_weights_path=td_weights_path,
+        )
+        print(f"[BUILD] profile={args.build_profile}")
+        print(f"[BUILD] output={build_output}")
+        print(f"[BUILD] source={cfg.source}")
 
     if not args.no_eval:
         print("\nFinal eval vs random (200 games)...")

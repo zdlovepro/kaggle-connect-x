@@ -20,8 +20,11 @@ from typing import Dict, List
 # 将项目根目录加入 Python path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from evaluate.tournament import run_single_game
-from evaluate.build_submission import BuildConfig, build_submission_with_config
+from evaluate.build_submission import (
+    BuildConfig,
+    build_submission,
+    build_submission_with_config,
+)
 
 
 # ── 评估权重配置 ─────────────────────────────────────────────
@@ -62,6 +65,15 @@ class Optimizer:
             import optuna
         except ImportError:
             print("[ERROR] optuna not installed. Run: pip install optuna")
+            return 0.0
+        try:
+            from evaluate.tournament import run_single_game
+        except ModuleNotFoundError as exc:
+            print(
+                "[ERROR] Missing dependency for self-play evaluation "
+                "(likely kaggle_environments)."
+            )
+            print(f"[ERROR] {exc}")
             return 0.0
 
 
@@ -133,7 +145,13 @@ class Optimizer:
 
         return win_rate
 
-    def run(self, n_trials: int = 200, timeout: int = 3600):
+    def run(
+        self,
+        n_trials: int = 200,
+        timeout: int = 3600,
+        build_profile: str = "optuna",
+        build_output: str = "submission.py",
+    ):
         """运行超参优化"""
         try:
             import optuna
@@ -162,7 +180,22 @@ class Optimizer:
         print("=" * 60)
 
         # 保存最优权重
-        self._save_best_weights(study.best_params)
+        weights_path = self._save_best_weights(study.best_params)
+
+        # Build final single-file submission artifact by default.
+        if build_profile != "none":
+            root = Path(__file__).resolve().parents[1]
+            output_path = Path(build_output)
+            if not output_path.is_absolute():
+                output_path = root / output_path
+            config = build_submission(
+                profile=build_profile,
+                output_path=output_path,
+                weights_path=Path(weights_path),
+            )
+            print(f"[BUILD] profile={build_profile}")
+            print(f"[BUILD] output={output_path}")
+            print(f"[BUILD] source={config.source}")
 
         return study.best_params
 
@@ -193,6 +226,7 @@ class Optimizer:
             f.write("]\n")
 
         print(f"[INFO] Best weights saved to {weights_path}")
+        return weights_path
 
 
 # ── 独立入口 ────────────────────────────────────────────────
@@ -205,8 +239,25 @@ if __name__ == "__main__":
     parser.add_argument("--games", type=int, default=50, help="Games per trial")
     parser.add_argument("--opponent", type=str, default="negamax", help="Opponent agent")
     parser.add_argument("--timeout", type=int, default=3600, help="Total timeout (seconds)")
+    parser.add_argument(
+        "--build-profile",
+        choices=("none", "auto", "optuna", "td"),
+        default="optuna",
+        help="Build final submission after optimization (default: optuna).",
+    )
+    parser.add_argument(
+        "--build-output",
+        type=str,
+        default="submission.py",
+        help="Built single-file submission path.",
+    )
 
     args = parser.parse_args()
 
     optimizer = Optimizer(opponent=args.opponent, games_per_trial=args.games)
-    best = optimizer.run(n_trials=args.trials, timeout=args.timeout)
+    best = optimizer.run(
+        n_trials=args.trials,
+        timeout=args.timeout,
+        build_profile=args.build_profile,
+        build_output=args.build_output,
+    )
