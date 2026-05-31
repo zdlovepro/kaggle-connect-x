@@ -287,6 +287,21 @@ def board_to_current_player_tensor(
     return out
 
 
+def to_tensor(
+    board: np.ndarray | Sequence[Sequence[int]],
+    current_player: int,
+    include_legal_channel: bool = True,
+    dtype: np.dtype = np.float32,
+) -> np.ndarray:
+    """Alias for board->tensor encoding used by model/evaluator pipeline."""
+    return board_to_current_player_tensor(
+        board=board,
+        current_player=current_player,
+        include_legal_channel=include_legal_channel,
+        dtype=dtype,
+    )
+
+
 __all__ = [
     "BoardConfig",
     "DEFAULT_COLUMNS",
@@ -308,5 +323,6 @@ __all__ = [
     "numpy_to_obs_board",
     "obs_board_to_numpy",
     "ordered_legal_moves",
+    "to_tensor",
     "terminal_value",
 ]
