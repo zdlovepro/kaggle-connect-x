@@ -110,7 +110,7 @@ def is_legal_move(board: np.ndarray | Sequence[Sequence[int]], col: int) -> bool
     arr = _as_board_array(board)
     if col < 0 or col >= arr.shape[1]:
         return False
-    return arr[0, col] == 0
+    return bool(arr[0, col] == 0)
 
 
 def get_next_open_row(
@@ -179,7 +179,7 @@ def check_win(
 
 def is_draw(board: np.ndarray | Sequence[Sequence[int]]) -> bool:
     arr = _as_board_array(board)
-    return np.all(arr != 0)
+    return bool(np.all(arr != 0))
 
 
 def get_winner(
