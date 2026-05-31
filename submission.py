@@ -35,6 +35,14 @@ TIME_BUDGET_MS = 1900.0
 TT_SIZE = 1 << 20        # 1,048,576 entries
 KILLER_SLOTS = 2
 
+# Dynamic time manager (used by iterative deepening)
+TIME_SAFE_BUFFER_MIN_MS = 80.0
+TIME_SAFE_BUFFER_MAX_MS = 130.0
+TIME_OVERAGE_FRACTION = 0.08
+TIME_OVERAGE_MAX_BONUS_MS = 400.0
+TIME_GROWTH_MIN = 1.2
+TIME_GROWTH_MAX = 3.5
+
 # Pre-computed bit masks for edge columns (prevent wrap-around in bit shifts)
 _COL0_MASK = np.uint64(0)
 _COL6_MASK = np.uint64(0)
@@ -125,6 +133,7 @@ def _tt_get_move(key):
 # ═══════════════════════════════════════════════════════════════
 
 _killers = np.full((MAX_DEPTH + 1, KILLER_SLOTS), -1, dtype=np.int8)
+_history = np.zeros((2, COLS), dtype=np.int32)
 
 
 def _killer_store(depth, col):
@@ -135,6 +144,26 @@ def _killer_store(depth, col):
 
 def _is_killer(depth, col):
     return col == _killers[depth][0] or col == _killers[depth][1]
+
+
+def _history_player_index(color):
+    return 0 if color > 0 else 1
+
+
+def _history_store(color, col, depth):
+    """History heuristic update on fail-high cutoffs."""
+    idx = _history_player_index(color)
+    bonus = max(1, depth * depth)
+    new_val = int(_history[idx][col]) + bonus
+    if new_val > 1_000_000:
+        _history[idx] = (_history[idx] // 2).astype(np.int32)
+        new_val = int(_history[idx][col]) + bonus
+    _history[idx][col] = np.int32(new_val)
+
+
+def _history_score(color, col):
+    idx = _history_player_index(color)
+    return int(_history[idx][col])
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -443,19 +472,41 @@ def _evaluate_learned(b_self, b_opp, heights):
 #  Move Ordering
 # ═══════════════════════════════════════════════════════════════
 
-def _order_moves(valid, tt_move=-1, depth=0):
+def _order_moves(valid, tt_move=-1, depth=0, b_self=None, b_opp=None, heights=None, color=1.0):
     """
-    Score and sort moves: TT best > Killer > Center > Edges.
+    Score and sort moves:
+      Immediate win > Forced block > TT best > Killer > History > Center.
     Higher score = searched first.
     """
     center = COLS // 2
+    tactical = {}
+
+    if b_self is not None and b_opp is not None and heights is not None:
+        current = b_self if color > 0 else b_opp
+        opponent = b_opp if color > 0 else b_self
+        for col in valid:
+            pos = _drop_pos(heights, col)
+            mask = np.uint64(1) << np.uint64(pos)
+            is_win = _has_won(current | mask)
+            is_block = _has_won(opponent | mask)
+            tactical[col] = (is_win, is_block)
 
     def _score(col):
-        if col == tt_move:
-            return 1000000
-        if _is_killer(depth, col):
-            return 100000
-        return 100 - abs(col - center)
+        is_win, is_block = tactical.get(col, (False, False))
+        if is_win:
+            tier = 5
+        elif is_block:
+            tier = 4
+        elif col == tt_move:
+            tier = 3
+        elif _is_killer(depth, col):
+            tier = 2
+        else:
+            tier = 1
+
+        history = _history_score(color, col)
+        center_bias = 100 - abs(col - center)
+        return (tier, history, center_bias)
 
     return sorted(valid, key=_score, reverse=True)
 
@@ -467,6 +518,45 @@ def _order_moves(valid, tt_move=-1, depth=0):
 _nodes = 0
 _search_start = 0.0
 _timed_out = False
+_search_soft_budget_ms = TIME_BUDGET_MS * 0.9
+_search_hard_budget_ms = TIME_BUDGET_MS
+
+
+def _calc_time_windows(fill_pct, remaining_overage_time=None):
+    """Compute soft/hard budgets for this move."""
+    overage_bonus = 0.0
+    if remaining_overage_time is not None:
+        overage_bonus = max(0.0, float(remaining_overage_time)) * 1000.0 * TIME_OVERAGE_FRACTION
+        overage_bonus = min(overage_bonus, TIME_OVERAGE_MAX_BONUS_MS)
+
+    hard_budget = TIME_BUDGET_MS + overage_bonus
+    safety_buffer = TIME_SAFE_BUFFER_MIN_MS + (1.0 - fill_pct) * (TIME_SAFE_BUFFER_MAX_MS - TIME_SAFE_BUFFER_MIN_MS)
+    soft_budget = max(150.0, hard_budget - safety_buffer)
+    return soft_budget, hard_budget
+
+
+def _estimate_next_depth_cost_ms(last_depth_ms, prev_depth_ms, fill_pct):
+    """Predict the next depth cost from recent depths."""
+    if last_depth_ms is None:
+        if fill_pct < 0.25:
+            return 45.0
+        if fill_pct < 0.5:
+            return 60.0
+        if fill_pct < 0.75:
+            return 90.0
+        return 130.0
+
+    growth = 1.8 - 0.5 * fill_pct
+    if prev_depth_ms is not None and prev_depth_ms > 1e-6:
+        growth = last_depth_ms / prev_depth_ms
+    growth = min(max(growth, TIME_GROWTH_MIN), TIME_GROWTH_MAX)
+    return last_depth_ms * growth
+
+
+def _can_start_next_depth(elapsed_ms, last_depth_ms, prev_depth_ms, fill_pct, soft_budget_ms):
+    """Guardrail: only start next depth if predicted completion is still safe."""
+    predicted = _estimate_next_depth_cost_ms(last_depth_ms, prev_depth_ms, fill_pct)
+    return (elapsed_ms + predicted) <= soft_budget_ms
 
 
 def _negascout(b_self, b_opp, heights, depth, alpha, beta, color, hash_key):
@@ -476,10 +566,10 @@ def _negascout(b_self, b_opp, heights, depth, alpha, beta, color, hash_key):
     color = +1: current player is max (self)
     color = -1: current player is min (opponent)
     """
-    global _nodes, _timed_out
+    global _nodes, _timed_out, _search_hard_budget_ms
     _nodes += 1
     if _nodes % 2048 == 0:
-        if (time.perf_counter() - _search_start) * 1000 > TIME_BUDGET_MS:
+        if (time.perf_counter() - _search_start) * 1000 > _search_hard_budget_ms:
             _timed_out = True
             return 0.0, None
 
@@ -505,7 +595,7 @@ def _negascout(b_self, b_opp, heights, depth, alpha, beta, color, hash_key):
         return color * score, None
 
     # ── Move ordering ──
-    ordered = _order_moves(valid, tt_move, depth)
+    ordered = _order_moves(valid, tt_move, depth, b_self, b_opp, heights, color)
 
     best_score = -math.inf
     best_col = ordered[0]
@@ -563,6 +653,7 @@ def _negascout(b_self, b_opp, heights, depth, alpha, beta, color, hash_key):
         alpha = max(alpha, best_score)
         if alpha >= beta:
             _killer_store(depth, col)
+            _history_store(color, col, depth)
             _tt_store(hash_key, best_score, depth, TT_LOWER, col)
             return best_score, col
 
@@ -626,9 +717,10 @@ def _book_move(board_list, valid, mark):
 #  Iterative Deepening Driver
 # ═══════════════════════════════════════════════════════════════
 
-def _search(b_self, b_opp, heights, hash_key):
+def _search(b_self, b_opp, heights, hash_key, remaining_overage_time=None):
     """Iterative deepening with adaptive start depth and time management."""
     global _nodes, _search_start, _timed_out
+    global _search_soft_budget_ms, _search_hard_budget_ms
 
     valid = _valid_cols(heights)
     if len(valid) == 1:
@@ -652,16 +744,28 @@ def _search(b_self, b_opp, heights, hash_key):
     else:
         start_depth = 10  # endgame: search deep
 
+    _search_soft_budget_ms, _search_hard_budget_ms = _calc_time_windows(
+        fill_pct, remaining_overage_time
+    )
+    prev_depth_ms = None
+    last_depth_ms = None
+
     for depth in range(start_depth, MAX_DEPTH + 1):
         elapsed = (time.perf_counter() - _search_start) * 1000
-        if elapsed > TIME_BUDGET_MS * 0.4:
+        if not _can_start_next_depth(
+            elapsed, last_depth_ms, prev_depth_ms, fill_pct, _search_soft_budget_ms
+        ):
             break
 
+        depth_start = time.perf_counter()
         score, move = _negascout(
             b_self, b_opp, heights, depth,
             -math.inf, math.inf, 1.0,
             hash_key,
         )
+        depth_ms = (time.perf_counter() - depth_start) * 1000
+        prev_depth_ms = last_depth_ms
+        last_depth_ms = max(1e-3, depth_ms)
 
         if _timed_out:
             break
@@ -671,6 +775,10 @@ def _search(b_self, b_opp, heights, hash_key):
 
         if abs(score) >= 99999:
             break  # forced win/loss
+
+        elapsed = (time.perf_counter() - _search_start) * 1000
+        if elapsed >= _search_soft_budget_ms:
+            break
 
     return best_col
 
@@ -711,16 +819,17 @@ def agent(observation, configuration):
         b_self, b_opp = b2, b1
 
     heights = _get_heights_from_list(board_list)
+    ordered_root = _order_moves(valid, -1, 0, b_self, b_opp, heights, 1.0)
 
     # ── 1. Immediate win ──
-    for col in valid:
+    for col in ordered_root:
         pos = _drop_pos(heights, col)
         new_board = b_self | (np.uint64(1) << np.uint64(pos))
         if _has_won(new_board):
             return col
 
     # ── 2. Block opponent ──
-    for col in valid:
+    for col in ordered_root:
         pos = _drop_pos(heights, col)
         new_board = b_opp | (np.uint64(1) << np.uint64(pos))
         if _has_won(new_board):
@@ -733,4 +842,5 @@ def agent(observation, configuration):
 
     # ── 4. Search ──
     hash_key = _zobrist_init(b_self, b_opp)
-    return _search(b_self, b_opp, heights, hash_key)
+    overage = getattr(observation, "remainingOverageTime", None)
+    return _search(b_self, b_opp, heights, hash_key, overage)
