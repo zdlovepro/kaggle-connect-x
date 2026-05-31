@@ -34,6 +34,7 @@ MAX_DEPTH = 20
 TIME_BUDGET_MS = 1900.0
 TT_SIZE = 1 << 20        # 1,048,576 entries
 KILLER_SLOTS = 2
+MATE_SCORE = 100000.0
 
 # Dynamic time manager (used by iterative deepening)
 TIME_SAFE_BUFFER_MIN_MS = 80.0
@@ -42,6 +43,12 @@ TIME_OVERAGE_FRACTION = 0.08
 TIME_OVERAGE_MAX_BONUS_MS = 400.0
 TIME_GROWTH_MIN = 1.2
 TIME_GROWTH_MAX = 3.5
+
+# Endgame exact-solve trigger (small-space, time-safe)
+ENDGAME_EXACT_EMPTY_MAX = 10
+ENDGAME_EXACT_MIN_SOFT_MS = 420.0
+ENDGAME_EXACT_RESERVE_MS = 260.0
+ENDGAME_EXACT_NODE_CHECK_INTERVAL = 1024
 
 # Pre-computed bit masks for edge columns (prevent wrap-around in bit shifts)
 _COL0_MASK = np.uint64(0)
@@ -569,6 +576,7 @@ _search_start = 0.0
 _timed_out = False
 _search_soft_budget_ms = TIME_BUDGET_MS * 0.9
 _search_hard_budget_ms = TIME_BUDGET_MS
+_last_search_mode = "iterative"
 
 
 def _calc_time_windows(fill_pct, remaining_overage_time=None):
@@ -608,7 +616,59 @@ def _can_start_next_depth(elapsed_ms, last_depth_ms, prev_depth_ms, fill_pct, so
     return (elapsed_ms + predicted) <= soft_budget_ms
 
 
-def _negascout(b_self, b_opp, heights, depth, alpha, beta, color, hash_key, mirror_hash_key):
+def _count_empty_cells(heights):
+    return (COLS * ROWS) - sum(int(h) for h in heights)
+
+
+def _can_try_endgame_exact(empty_cells, soft_budget_ms):
+    if empty_cells <= 0 or empty_cells > ENDGAME_EXACT_EMPTY_MAX:
+        return False
+    return soft_budget_ms >= ENDGAME_EXACT_MIN_SOFT_MS
+
+
+def _calc_endgame_exact_hard_budget_ms(soft_budget_ms, hard_budget_ms):
+    """Keep reserve for fallback iterative deepening if exact solver times out."""
+    return min(hard_budget_ms, max(150.0, soft_budget_ms - ENDGAME_EXACT_RESERVE_MS))
+
+
+def _try_endgame_exact(b_self, b_opp, heights, hash_key, mirror_hash_key):
+    """
+    Lightweight exact endgame solver:
+      - Trigger only when empties are small.
+      - Search to full remaining ply with draw leaf (no heuristic leaf bias).
+      - On timeout, gracefully fall back to iterative deepening.
+    """
+    global _timed_out, _search_hard_budget_ms, _last_search_mode
+    empty_cells = _count_empty_cells(heights)
+    if not _can_try_endgame_exact(empty_cells, _search_soft_budget_ms):
+        return None
+
+    exact_depth = min(MAX_DEPTH, empty_cells)
+    saved_hard = _search_hard_budget_ms
+    _search_hard_budget_ms = _calc_endgame_exact_hard_budget_ms(
+        _search_soft_budget_ms, saved_hard
+    )
+
+    _timed_out = False
+    _score, move = _negascout(
+        b_self, b_opp, heights, exact_depth,
+        -math.inf, math.inf, 1.0,
+        hash_key, mirror_hash_key,
+        exact_mode=True,
+    )
+    exact_timed_out = _timed_out
+
+    _search_hard_budget_ms = saved_hard
+    _timed_out = False
+
+    if exact_timed_out or move is None:
+        return None
+
+    _last_search_mode = f"endgame_exact_d{exact_depth}"
+    return move
+
+
+def _negascout(b_self, b_opp, heights, depth, alpha, beta, color, hash_key, mirror_hash_key, exact_mode=False):
     """
     NegaScout (PVS) with TT and killer heuristic.
 
@@ -617,7 +677,8 @@ def _negascout(b_self, b_opp, heights, depth, alpha, beta, color, hash_key, mirr
     """
     global _nodes, _timed_out, _search_hard_budget_ms
     _nodes += 1
-    if _nodes % 2048 == 0:
+    check_interval = ENDGAME_EXACT_NODE_CHECK_INTERVAL if exact_mode else 2048
+    if _nodes % check_interval == 0:
         if (time.perf_counter() - _search_start) * 1000 > _search_hard_budget_ms:
             _timed_out = True
             return 0.0, None
@@ -640,10 +701,13 @@ def _negascout(b_self, b_opp, heights, depth, alpha, beta, color, hash_key, mirr
     # ── Terminal: someone won on the previous move ──
     current_board = b_self if color > 0 else b_opp
     if _has_won(current_board):
-        return color * 100000.0, None
+        term = MATE_SCORE + float(depth) if exact_mode else MATE_SCORE
+        return color * term, None
 
     # ── Leaf node ──
     if depth == 0:
+        if exact_mode:
+            return 0.0, None  # exact draw leaf: no heuristic bias
         score = evaluate(b_self, b_opp, heights)
         return color * score, None
 
@@ -674,11 +738,13 @@ def _negascout(b_self, b_opp, heights, depth, alpha, beta, color, hash_key, mirr
         heights[col] += 1
 
         if won:
-            child_score = color * 100000.0
+            term = MATE_SCORE + float(depth) if exact_mode else MATE_SCORE
+            child_score = color * term
         elif first_child:
             child_score, _ = _negascout(
                 new_self, new_opp, heights, depth - 1,
                 -beta, -alpha, -color, new_hash, new_mirror_hash,
+                exact_mode=exact_mode,
             )
             child_score = -child_score
             first_child = False
@@ -687,6 +753,7 @@ def _negascout(b_self, b_opp, heights, depth, alpha, beta, color, hash_key, mirr
             child_score, _ = _negascout(
                 new_self, new_opp, heights, depth - 1,
                 -(alpha + 1), -alpha, -color, new_hash, new_mirror_hash,
+                exact_mode=exact_mode,
             )
             child_score = -child_score
             # Re-search full window if promising
@@ -694,6 +761,7 @@ def _negascout(b_self, b_opp, heights, depth, alpha, beta, color, hash_key, mirr
                 child_score, _ = _negascout(
                     new_self, new_opp, heights, depth - 1,
                     -beta, -child_score, -color, new_hash, new_mirror_hash,
+                    exact_mode=exact_mode,
                 )
                 child_score = -child_score
 
@@ -831,7 +899,7 @@ def _book_move(board_list, valid, mark):
 
 def _search(b_self, b_opp, heights, hash_key, mirror_hash_key, remaining_overage_time=None):
     """Iterative deepening with adaptive start depth and time management."""
-    global _nodes, _search_start, _timed_out
+    global _nodes, _search_start, _timed_out, _last_search_mode
     global _search_soft_budget_ms, _search_hard_budget_ms
 
     valid = _valid_cols(heights)
@@ -841,6 +909,7 @@ def _search(b_self, b_opp, heights, hash_key, mirror_hash_key, remaining_overage
     _search_start = time.perf_counter()
     _nodes = 0
     _timed_out = False
+    _last_search_mode = "iterative"
 
     best_col = valid[0]
 
@@ -859,6 +928,12 @@ def _search(b_self, b_opp, heights, hash_key, mirror_hash_key, remaining_overage
     _search_soft_budget_ms, _search_hard_budget_ms = _calc_time_windows(
         fill_pct, remaining_overage_time
     )
+
+    # Lightweight endgame exact mode: full remaining-ply solve under guarded budget.
+    exact_move = _try_endgame_exact(b_self, b_opp, heights, hash_key, mirror_hash_key)
+    if exact_move is not None:
+        return exact_move
+
     prev_depth_ms = None
     last_depth_ms = None
 
@@ -885,7 +960,7 @@ def _search(b_self, b_opp, heights, hash_key, mirror_hash_key, remaining_overage
         if move is not None:
             best_col = move
 
-        if abs(score) >= 99999:
+        if abs(score) >= (MATE_SCORE - 1.0):
             break  # forced win/loss
 
         elapsed = (time.perf_counter() - _search_start) * 1000
