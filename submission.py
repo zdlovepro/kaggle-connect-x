@@ -50,6 +50,13 @@ for r in range(ROWS):
     _COL0_MASK |= np.uint64(1) << np.uint64(r * ROW_STRIDE)
     _COL6_MASK |= np.uint64(1) << np.uint64(r * ROW_STRIDE + (COLS - 1))
 
+# Mirror normalization tables for TT key canonicalization.
+_MIRROR_COL = tuple(COLS - 1 - c for c in range(COLS))
+_MIRROR_POS = tuple(
+    (pos // ROW_STRIDE) * ROW_STRIDE + _MIRROR_COL[pos % ROW_STRIDE]
+    for pos in range(ROWS * COLS)
+)
+
 # ═══════════════════════════════════════════════════════════════
 #  Zobrist Hashing
 # ═══════════════════════════════════════════════════════════════
@@ -71,9 +78,51 @@ def _zobrist_init(b1, b2):
     return h
 
 
+def _zobrist_init_mirror(b1, b2):
+    """Compute Zobrist hash for the left-right mirrored board."""
+    h = np.uint64(0)
+    for pos in range(ROWS * COLS):
+        mask = np.uint64(1) << np.uint64(pos)
+        mirror_pos = _MIRROR_POS[pos]
+        if b1 & mask:
+            h ^= _ZOBRIST[mirror_pos][0]
+        elif b2 & mask:
+            h ^= _ZOBRIST[mirror_pos][1]
+    return h
+
+
 def _zobrist_update(h, pos, player):
     """Incremental hash update: XOR in piece at pos for player (1 or 2)."""
     return h ^ _ZOBRIST[pos][player - 1]
+
+
+def _canonical_tt_key(hash_key, mirror_hash_key):
+    """Use min(raw_hash, mirror_hash) as canonical TT key."""
+    if mirror_hash_key < hash_key:
+        return mirror_hash_key, True
+    return hash_key, False
+
+
+def _mirror_col(col):
+    return _MIRROR_COL[col]
+
+
+def _tt_move_to_local(tt_move, tt_is_mirrored):
+    """Map canonical TT move back to local board orientation."""
+    if tt_move < 0:
+        return -1
+    if tt_is_mirrored:
+        return _mirror_col(tt_move)
+    return tt_move
+
+
+def _local_move_to_tt(local_move, tt_is_mirrored):
+    """Map local move into canonical TT orientation."""
+    if local_move < 0:
+        return -1
+    if tt_is_mirrored:
+        return _mirror_col(local_move)
+    return local_move
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -559,7 +608,7 @@ def _can_start_next_depth(elapsed_ms, last_depth_ms, prev_depth_ms, fill_pct, so
     return (elapsed_ms + predicted) <= soft_budget_ms
 
 
-def _negascout(b_self, b_opp, heights, depth, alpha, beta, color, hash_key):
+def _negascout(b_self, b_opp, heights, depth, alpha, beta, color, hash_key, mirror_hash_key):
     """
     NegaScout (PVS) with TT and killer heuristic.
 
@@ -574,15 +623,19 @@ def _negascout(b_self, b_opp, heights, depth, alpha, beta, color, hash_key):
             return 0.0, None
 
     # ── TT probe ──
-    tt_result = _tt_probe(hash_key, depth, alpha, beta)
+    tt_key, tt_key_is_mirrored = _canonical_tt_key(hash_key, mirror_hash_key)
+    tt_result = _tt_probe(tt_key, depth, alpha, beta)
     tt_move = -1
     if tt_result is not None:
-        return tt_result
-    tt_move = _tt_get_move(hash_key)
+        tt_val, tt_best = tt_result
+        return tt_val, _tt_move_to_local(tt_best, tt_key_is_mirrored)
+    tt_move = _tt_move_to_local(_tt_get_move(tt_key), tt_key_is_mirrored)
 
     valid = _valid_cols(heights)
     if not valid:
         return 0.0, None  # draw
+    if tt_move not in valid:
+        tt_move = -1
 
     # ── Terminal: someone won on the previous move ──
     current_board = b_self if color > 0 else b_opp
@@ -604,16 +657,19 @@ def _negascout(b_self, b_opp, heights, depth, alpha, beta, color, hash_key):
 
     for col in ordered:
         pos = _drop_pos(heights, col)
+        mirror_pos = _MIRROR_POS[pos]
         mask = np.uint64(1) << np.uint64(pos)
 
         if color > 0:
             new_self, new_opp = b_self | mask, b_opp
             won = _has_won(new_self)
             new_hash = _zobrist_update(hash_key, pos, 1)
+            new_mirror_hash = _zobrist_update(mirror_hash_key, mirror_pos, 1)
         else:
             new_self, new_opp = b_self, b_opp | mask
             won = _has_won(new_opp)
             new_hash = _zobrist_update(hash_key, pos, 2)
+            new_mirror_hash = _zobrist_update(mirror_hash_key, mirror_pos, 2)
 
         heights[col] += 1
 
@@ -622,7 +678,7 @@ def _negascout(b_self, b_opp, heights, depth, alpha, beta, color, hash_key):
         elif first_child:
             child_score, _ = _negascout(
                 new_self, new_opp, heights, depth - 1,
-                -beta, -alpha, -color, new_hash,
+                -beta, -alpha, -color, new_hash, new_mirror_hash,
             )
             child_score = -child_score
             first_child = False
@@ -630,14 +686,14 @@ def _negascout(b_self, b_opp, heights, depth, alpha, beta, color, hash_key):
             # Null-window scout
             child_score, _ = _negascout(
                 new_self, new_opp, heights, depth - 1,
-                -(alpha + 1), -alpha, -color, new_hash,
+                -(alpha + 1), -alpha, -color, new_hash, new_mirror_hash,
             )
             child_score = -child_score
             # Re-search full window if promising
             if child_score > alpha and child_score < beta:
                 child_score, _ = _negascout(
                     new_self, new_opp, heights, depth - 1,
-                    -beta, -child_score, -color, new_hash,
+                    -beta, -child_score, -color, new_hash, new_mirror_hash,
                 )
                 child_score = -child_score
 
@@ -654,7 +710,8 @@ def _negascout(b_self, b_opp, heights, depth, alpha, beta, color, hash_key):
         if alpha >= beta:
             _killer_store(depth, col)
             _history_store(color, col, depth)
-            _tt_store(hash_key, best_score, depth, TT_LOWER, col)
+            tt_col = _local_move_to_tt(col, tt_key_is_mirrored)
+            _tt_store(tt_key, best_score, depth, TT_LOWER, tt_col)
             return best_score, col
 
     flag = TT_EXACT
@@ -662,7 +719,8 @@ def _negascout(b_self, b_opp, heights, depth, alpha, beta, color, hash_key):
         flag = TT_UPPER
     elif best_score >= beta:
         flag = TT_LOWER
-    _tt_store(hash_key, best_score, depth, flag, best_col)
+    tt_best = _local_move_to_tt(best_col, tt_key_is_mirrored)
+    _tt_store(tt_key, best_score, depth, flag, tt_best)
 
     return best_score, best_col
 
@@ -717,7 +775,7 @@ def _book_move(board_list, valid, mark):
 #  Iterative Deepening Driver
 # ═══════════════════════════════════════════════════════════════
 
-def _search(b_self, b_opp, heights, hash_key, remaining_overage_time=None):
+def _search(b_self, b_opp, heights, hash_key, mirror_hash_key, remaining_overage_time=None):
     """Iterative deepening with adaptive start depth and time management."""
     global _nodes, _search_start, _timed_out
     global _search_soft_budget_ms, _search_hard_budget_ms
@@ -761,7 +819,7 @@ def _search(b_self, b_opp, heights, hash_key, remaining_overage_time=None):
         score, move = _negascout(
             b_self, b_opp, heights, depth,
             -math.inf, math.inf, 1.0,
-            hash_key,
+            hash_key, mirror_hash_key,
         )
         depth_ms = (time.perf_counter() - depth_start) * 1000
         prev_depth_ms = last_depth_ms
@@ -842,5 +900,6 @@ def agent(observation, configuration):
 
     # ── 4. Search ──
     hash_key = _zobrist_init(b_self, b_opp)
+    mirror_hash_key = _zobrist_init_mirror(b_self, b_opp)
     overage = getattr(observation, "remainingOverageTime", None)
-    return _search(b_self, b_opp, heights, hash_key, overage)
+    return _search(b_self, b_opp, heights, hash_key, mirror_hash_key, overage)
