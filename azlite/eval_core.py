@@ -52,9 +52,50 @@ INAROW = 4
 MAX_MOVES = ROWS * COLS
 KAGGLE_ACT_TIMEOUT_SEC = 2.0
 KAGGLE_P95_TIMEOUT_SEC = 2.0
+DEFAULT_NEGAMAX_TIME_BUDGET_MS = 1900.0
+DEFAULT_MCTS_LITE_TIME_BUDGET_MS = 1900.0
 
 # Keep this visible in logs so future runs can confirm metric provenance.
 EVALUATOR_BACKEND = "local_turn_engine_v2"
+
+EVAL_PROFILE_DEFAULTS: Dict[str, Dict[str, Any]] = {
+    "quick": {
+        "candidate_timeout_ms": 2000.0,
+        "opponent_timeout_ms": 4000.0,
+        "games": {
+            "default": 24,
+            "random": 24,
+            "negamax": 24,
+            "mcts_lite": 24,
+            "previous_best": 24,
+        },
+        "diagnostic_only": False,
+    },
+    "strong_local": {
+        "candidate_timeout_ms": 2000.0,
+        "opponent_timeout_ms": 5000.0,
+        "games": {
+            "default": 120,
+            "random": 120,
+            "negamax": 120,
+            "mcts_lite": 120,
+            "previous_best": 120,
+        },
+        "diagnostic_only": True,
+    },
+    "kaggle_like": {
+        "candidate_timeout_ms": 2000.0,
+        "opponent_timeout_ms": 2000.0,
+        "games": {
+            "default": 120,
+            "random": 120,
+            "negamax": 120,
+            "mcts_lite": 120,
+            "previous_best": 120,
+        },
+        "diagnostic_only": False,
+    },
+}
 
 
 @dataclass
@@ -81,6 +122,63 @@ def _safe_p95(values: Sequence[float]) -> float:
     if not values:
         return 0.0
     return float(np.percentile(np.asarray(values, dtype=np.float64), 95))
+
+
+def normalize_eval_profile(eval_profile: Optional[str]) -> str:
+    key = str(eval_profile or "kaggle_like").strip().lower()
+    if key not in EVAL_PROFILE_DEFAULTS:
+        raise ValueError(
+            f"Unsupported eval profile '{eval_profile}'. "
+            f"Expected one of: {', '.join(sorted(EVAL_PROFILE_DEFAULTS.keys()))}"
+        )
+    return key
+
+
+def resolve_eval_config(
+    eval_profile: str,
+    base_games: int = 120,
+    candidate_timeout_ms: Optional[float] = None,
+    opponent_timeout_ms: Optional[float] = None,
+    eval_games_random: Optional[int] = None,
+    eval_games_negamax: Optional[int] = None,
+    eval_games_mcts_lite: Optional[int] = None,
+    eval_games_previous_best: Optional[int] = None,
+) -> Dict[str, Any]:
+    profile = normalize_eval_profile(eval_profile)
+    profile_defaults = EVAL_PROFILE_DEFAULTS[profile]
+    games_defaults = dict(profile_defaults.get("games", {}))
+
+    default_games = int(base_games) if int(base_games) > 0 else int(games_defaults.get("default", 24))
+    games_by_opponent = {
+        "default": default_games,
+        "random": int(eval_games_random) if eval_games_random is not None else int(games_defaults.get("random", default_games)),
+        "negamax": int(eval_games_negamax) if eval_games_negamax is not None else int(games_defaults.get("negamax", default_games)),
+        "mcts_lite": int(eval_games_mcts_lite) if eval_games_mcts_lite is not None else int(games_defaults.get("mcts_lite", default_games)),
+        "previous_best": int(eval_games_previous_best) if eval_games_previous_best is not None else int(games_defaults.get("previous_best", default_games)),
+    }
+    for key, value in list(games_by_opponent.items()):
+        games_by_opponent[key] = max(1, int(value))
+
+    cand_ms = float(candidate_timeout_ms) if candidate_timeout_ms is not None else float(profile_defaults["candidate_timeout_ms"])
+    opp_ms = float(opponent_timeout_ms) if opponent_timeout_ms is not None else float(profile_defaults["opponent_timeout_ms"])
+
+    return {
+        "eval_profile": profile,
+        "candidate_timeout_ms": cand_ms,
+        "opponent_timeout_ms": opp_ms,
+        "candidate_timeout_sec": cand_ms / 1000.0,
+        "opponent_timeout_sec": opp_ms / 1000.0,
+        "games_by_opponent": games_by_opponent,
+        "diagnostic_only": bool(profile_defaults.get("diagnostic_only", False)),
+    }
+
+
+def games_for_opponent(config: Dict[str, Any], opponent: str) -> int:
+    games = config.get("games_by_opponent", {})
+    if not isinstance(games, dict):
+        return int(config.get("games", 24))
+    key = str(opponent or "").strip().lower().replace("-", "_")
+    return int(games.get(key, games.get("default", 24)))
 
 
 def _load_model_symbols():
@@ -112,13 +210,13 @@ def _build_random_agent(seed: Optional[int] = None) -> UnifiedAgent:
     return UnifiedAgent(name="random", fn=_agent, description="uniform legal random")
 
 
-def _build_negamax_agent() -> UnifiedAgent:
+def _build_negamax_agent(time_budget_ms: float = DEFAULT_NEGAMAX_TIME_BUDGET_MS) -> UnifiedAgent:
     if MinimaxBitboardAgent is None:
         raise RuntimeError("MinimaxBitboardAgent is unavailable")
     engine = MinimaxBitboardAgent(
         name="negamax",
         max_depth=20,
-        time_budget_ms=1900.0,
+        time_budget_ms=float(time_budget_ms),
         use_tt=True,
     )
 
@@ -171,10 +269,10 @@ def _build_heuristic_agent() -> UnifiedAgent:
     return UnifiedAgent(name="heuristic", fn=_agent, description="heuristic evaluator argmax")
 
 
-def _build_mcts_lite_agent() -> UnifiedAgent:
+def _build_mcts_lite_agent(time_budget_ms: float = DEFAULT_MCTS_LITE_TIME_BUDGET_MS) -> UnifiedAgent:
     if MCTSAgent is None:
         raise RuntimeError("MCTS-lite agent is unavailable")
-    engine = MCTSAgent(name="mcts_lite", c_param=1.414, time_budget_ms=1900.0)
+    engine = MCTSAgent(name="mcts_lite", c_param=1.414, time_budget_ms=float(time_budget_ms))
 
     def _agent(observation, configuration):
         return int(engine.select_action(observation, configuration))
@@ -267,18 +365,22 @@ def create_agent(
     simulations: int = 100,
     device: str = "cpu",
     seed: Optional[int] = None,
+    time_budget_ms: Optional[float] = None,
 ) -> UnifiedAgent:
     key = spec.strip().lower()
+    budget_ms = float(time_budget_ms) if time_budget_ms is not None else DEFAULT_NEGAMAX_TIME_BUDGET_MS
     if key == "random":
         return _build_random_agent(seed=seed)
     if key == "negamax":
-        return _build_negamax_agent()
+        return _build_negamax_agent(time_budget_ms=budget_ms)
     if key in ("original", "submission", "feature_mcts_lite_original"):
         return _build_original_agent()
     if key in ("heuristic",):
         return _build_heuristic_agent()
     if key in ("mcts_lite", "mcts-lite", "mcts"):
-        return _build_mcts_lite_agent()
+        return _build_mcts_lite_agent(
+            time_budget_ms=float(time_budget_ms) if time_budget_ms is not None else DEFAULT_MCTS_LITE_TIME_BUDGET_MS
+        )
     if key in ("checkpoint_puct", "azlite_checkpoint_puct", "candidate"):
         if not checkpoint:
             raise ValueError(f"agent '{spec}' requires --checkpoint")
@@ -314,6 +416,7 @@ def _play_single_game(
     agent_p1: UnifiedAgent,
     agent_p2: UnifiedAgent,
     act_timeout_sec: float = KAGGLE_ACT_TIMEOUT_SEC,
+    timeout_sec_by_mark: Optional[Dict[int, float]] = None,
 ) -> Dict[str, Any]:
     board = np.zeros((ROWS, COLS), dtype=np.int8)
     cfg = _default_cfg()
@@ -338,7 +441,10 @@ def _play_single_game(
         elapsed = float(time.perf_counter() - t0)
         step_times[mark].append(elapsed)
 
-        if elapsed > float(act_timeout_sec):
+        mark_timeout = float(act_timeout_sec)
+        if timeout_sec_by_mark is not None:
+            mark_timeout = float(timeout_sec_by_mark.get(int(mark), mark_timeout))
+        if elapsed > mark_timeout:
             timeouts[mark] += 1
             winner = 2 if mark == 1 else 1
             break
@@ -388,6 +494,9 @@ def play_match(
     swap_sides: bool = True,
     seed: Optional[int] = None,
     act_timeout_sec: float = KAGGLE_ACT_TIMEOUT_SEC,
+    candidate_timeout_ms: Optional[float] = None,
+    opponent_timeout_ms: Optional[float] = None,
+    eval_profile: str = "kaggle_like",
     max_opponent_timeout_rate: float = 0.05,
     max_candidate_timeout_rate: float = 0.01,
     timeout_result_policy: str = "fail_eval",
@@ -406,6 +515,17 @@ def play_match(
     timeout_policy = str(timeout_result_policy).strip().lower()
     if timeout_policy not in {"loss", "exclude", "fail_eval"}:
         raise ValueError(f"Unsupported timeout_result_policy: {timeout_result_policy}")
+    profile_key = normalize_eval_profile(eval_profile)
+
+    default_timeout_ms = float(act_timeout_sec) * 1000.0
+    candidate_timeout_ms_final = (
+        float(candidate_timeout_ms) if candidate_timeout_ms is not None else default_timeout_ms
+    )
+    opponent_timeout_ms_final = (
+        float(opponent_timeout_ms) if opponent_timeout_ms is not None else default_timeout_ms
+    )
+    candidate_timeout_sec = candidate_timeout_ms_final / 1000.0
+    opponent_timeout_sec = opponent_timeout_ms_final / 1000.0
 
     wins = losses = draws = 0
     reliable_wins = reliable_losses = reliable_draws = 0
@@ -428,13 +548,16 @@ def play_match(
         a_first = (not swap) or (g < first_games)
         if a_first:
             p1, p2 = agent_a, agent_b
+            timeout_by_mark = {1: candidate_timeout_sec, 2: opponent_timeout_sec}
         else:
             p1, p2 = agent_b, agent_a
+            timeout_by_mark = {1: opponent_timeout_sec, 2: candidate_timeout_sec}
 
         game = _play_single_game(
             p1,
             p2,
             act_timeout_sec=float(act_timeout_sec),
+            timeout_sec_by_mark=timeout_by_mark,
         )
         winner = int(game["winner"])
         total_steps += int(game["steps"])
@@ -503,6 +626,8 @@ def play_match(
     avg_steps = float(total_steps / n)
     avg_step_time_a = float(np.mean(step_times_a)) if step_times_a else 0.0
     avg_step_time_b = float(np.mean(step_times_b)) if step_times_b else 0.0
+    max_step_time_a = float(np.max(step_times_a)) if step_times_a else 0.0
+    max_step_time_b = float(np.max(step_times_b)) if step_times_b else 0.0
     p95_step_time_a = _safe_p95(step_times_a)
     p95_step_time_b = _safe_p95(step_times_b)
     step_time_sum_a = float(np.sum(step_times_a)) if step_times_a else 0.0
@@ -537,6 +662,7 @@ def play_match(
 
     return {
         "evaluator_backend": EVALUATOR_BACKEND,
+        "eval_profile": profile_key,
         "agent_a": agent_a.name,
         "agent_b": agent_b.name,
         "games": n,
@@ -561,6 +687,12 @@ def play_match(
         "opponent_timeouts": int(timeout_b),
         "candidate_timeout_rate": candidate_timeout_rate,
         "opponent_timeout_rate": opponent_timeout_rate,
+        "candidate_timeout_ms": candidate_timeout_ms_final,
+        "opponent_timeout_ms": opponent_timeout_ms_final,
+        "candidate_avg_move_ms": avg_step_time_a * 1000.0,
+        "candidate_max_move_ms": max_step_time_a * 1000.0,
+        "opponent_avg_move_ms": avg_step_time_b * 1000.0,
+        "opponent_max_move_ms": max_step_time_b * 1000.0,
         "invalid_actions": {
             "candidate": int(illegal_a),
             "opponent": int(illegal_b),

@@ -127,7 +127,10 @@ def _evaluate_vs(
     seed: Optional[int] = None,
     simulations: int = 100,
     device: str = "cpu",
-    act_timeout_sec: float = eval_core.KAGGLE_ACT_TIMEOUT_SEC,
+    candidate_timeout_ms: float = 2000.0,
+    opponent_timeout_ms: float = 4000.0,
+    eval_profile: str = "quick",
+    opponent_time_budget_ms: Optional[float] = None,
     max_opponent_timeout_rate: float = 0.05,
     max_candidate_timeout_rate: float = 0.01,
     timeout_result_policy: str = "fail_eval",
@@ -139,6 +142,7 @@ def _evaluate_vs(
             simulations=int(simulations),
             device=str(device),
             seed=seed,
+            time_budget_ms=opponent_time_budget_ms,
         )
     else:
         opponent = eval_core.as_unified_agent(agent_b, default_name="train_opponent")
@@ -149,7 +153,9 @@ def _evaluate_vs(
         num_games=int(games),
         swap_sides=True,
         seed=seed,
-        act_timeout_sec=float(act_timeout_sec),
+        candidate_timeout_ms=float(candidate_timeout_ms),
+        opponent_timeout_ms=float(opponent_timeout_ms),
+        eval_profile=str(eval_profile),
         max_opponent_timeout_rate=float(max_opponent_timeout_rate),
         max_candidate_timeout_rate=float(max_candidate_timeout_rate),
         timeout_result_policy=str(timeout_result_policy),
@@ -422,8 +428,38 @@ def _main() -> None:
         choices=("loss", "exclude", "fail_eval"),
         default="fail_eval",
     )
+    parser.add_argument(
+        "--eval-profile",
+        type=str,
+        choices=("quick", "strong_local", "kaggle_like"),
+        default="quick",
+        help="Training quick-eval profile (default quick)",
+    )
+    parser.add_argument("--candidate-timeout-ms", type=float, default=None)
+    parser.add_argument("--opponent-timeout-ms", type=float, default=None)
+    parser.add_argument("--eval-games-random", type=int, default=None)
+    parser.add_argument("--eval-games-negamax", type=int, default=None)
+    parser.add_argument("--eval-games-previous-best", type=int, default=None)
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
+
+    legacy_timeout_override_ms = None
+    if abs(float(args.eval_act_timeout_sec) - float(eval_core.KAGGLE_ACT_TIMEOUT_SEC)) > 1e-9:
+        legacy_timeout_override_ms = float(args.eval_act_timeout_sec) * 1000.0
+
+    eval_cfg = eval_core.resolve_eval_config(
+        eval_profile=str(args.eval_profile),
+        base_games=int(args.eval_games),
+        candidate_timeout_ms=(
+            args.candidate_timeout_ms
+            if args.candidate_timeout_ms is not None
+            else legacy_timeout_override_ms
+        ),
+        opponent_timeout_ms=args.opponent_timeout_ms,
+        eval_games_random=args.eval_games_random,
+        eval_games_negamax=args.eval_games_negamax,
+        eval_games_previous_best=args.eval_games_previous_best,
+    )
 
     _set_seed(int(args.seed))
     device = str(args.device)
@@ -484,6 +520,17 @@ def _main() -> None:
         f"batch={args.batch_size}, train_steps={args.train_steps}"
     )
     print(f"[train] evaluator_backend={eval_core.EVALUATOR_BACKEND}")
+    print(
+        "[train] eval_profile={profile} candidate_timeout_ms={cand:.0f} opponent_timeout_ms={opp:.0f} "
+        "games(random/negamax/previous_best)={gr}/{gn}/{gp}".format(
+            profile=eval_cfg["eval_profile"],
+            cand=float(eval_cfg["candidate_timeout_ms"]),
+            opp=float(eval_cfg["opponent_timeout_ms"]),
+            gr=eval_core.games_for_opponent(eval_cfg, "random"),
+            gn=eval_core.games_for_opponent(eval_cfg, "negamax"),
+            gp=eval_core.games_for_opponent(eval_cfg, "previous_best"),
+        )
+    )
 
     for iteration in range(start_iteration, end_iteration + 1):
         print("\n" + "=" * 72)
@@ -531,6 +578,9 @@ def _main() -> None:
             "train_steps": int(args.train_steps),
             "simulations": int(args.simulations),
             "eval_results": {},
+            "eval_profile": str(eval_cfg["eval_profile"]),
+            "candidate_timeout_ms": float(eval_cfg["candidate_timeout_ms"]),
+            "opponent_timeout_ms": float(eval_cfg["opponent_timeout_ms"]),
             "buffer_size": int(len(replay)),
             "loss": metrics,
             "self_play_avg_game_length": avg_game_length,
@@ -554,11 +604,14 @@ def _main() -> None:
             eval_random = _evaluate_vs(
                 current_agent,
                 "random",
-                games=int(args.eval_games),
+                games=eval_core.games_for_opponent(eval_cfg, "random"),
                 seed=int(args.seed) + iteration * 100 + 1,
                 simulations=int(args.simulations),
                 device=device,
-                act_timeout_sec=float(args.eval_act_timeout_sec),
+                candidate_timeout_ms=float(eval_cfg["candidate_timeout_ms"]),
+                opponent_timeout_ms=float(eval_cfg["opponent_timeout_ms"]),
+                eval_profile=str(eval_cfg["eval_profile"]),
+                opponent_time_budget_ms=float(eval_cfg["opponent_timeout_ms"]),
                 max_opponent_timeout_rate=float(args.max_opponent_timeout_rate),
                 max_candidate_timeout_rate=float(args.max_candidate_timeout_rate),
                 timeout_result_policy=str(args.timeout_result_policy),
@@ -566,11 +619,14 @@ def _main() -> None:
             eval_negamax = _evaluate_vs(
                 current_agent,
                 "negamax",
-                games=int(args.eval_games),
+                games=eval_core.games_for_opponent(eval_cfg, "negamax"),
                 seed=int(args.seed) + iteration * 100 + 2,
                 simulations=int(args.simulations),
                 device=device,
-                act_timeout_sec=float(args.eval_act_timeout_sec),
+                candidate_timeout_ms=float(eval_cfg["candidate_timeout_ms"]),
+                opponent_timeout_ms=float(eval_cfg["opponent_timeout_ms"]),
+                eval_profile=str(eval_cfg["eval_profile"]),
+                opponent_time_budget_ms=float(eval_cfg["opponent_timeout_ms"]),
                 max_opponent_timeout_rate=float(args.max_opponent_timeout_rate),
                 max_candidate_timeout_rate=float(args.max_candidate_timeout_rate),
                 timeout_result_policy=str(args.timeout_result_policy),
@@ -582,11 +638,13 @@ def _main() -> None:
                 eval_prev_best = _evaluate_vs(
                     current_agent,
                     best_agent,
-                    games=max(8, int(args.eval_games)),
+                    games=max(8, eval_core.games_for_opponent(eval_cfg, "previous_best")),
                     seed=int(args.seed) + iteration * 100 + 3,
                     simulations=int(args.simulations),
                     device=device,
-                    act_timeout_sec=float(args.eval_act_timeout_sec),
+                    candidate_timeout_ms=float(eval_cfg["candidate_timeout_ms"]),
+                    opponent_timeout_ms=float(eval_cfg["opponent_timeout_ms"]),
+                    eval_profile=str(eval_cfg["eval_profile"]),
                     max_opponent_timeout_rate=float(args.max_opponent_timeout_rate),
                     max_candidate_timeout_rate=float(args.max_candidate_timeout_rate),
                     timeout_result_policy=str(args.timeout_result_policy),
@@ -603,6 +661,9 @@ def _main() -> None:
                 best_meta = dict(latest_meta)
                 best_meta["eval_results"] = {
                     "evaluator_backend": eval_core.EVALUATOR_BACKEND,
+                    "eval_profile": str(eval_cfg["eval_profile"]),
+                    "candidate_timeout_ms": float(eval_cfg["candidate_timeout_ms"]),
+                    "opponent_timeout_ms": float(eval_cfg["opponent_timeout_ms"]),
                     "random": eval_random.__dict__,
                     "negamax": eval_negamax.__dict__,
                     "previous_best": eval_prev_best.__dict__ if eval_prev_best else None,
@@ -654,6 +715,10 @@ def _main() -> None:
                 "latest_negamax_win_rate": latest_negamax_win_rate,
                 "latest_checkpoint": str(latest_ckpt_path.resolve()),
                 "best_checkpoint": str(best_ckpt_path.resolve()) if best_ckpt_path.exists() else "",
+                "eval_profile": str(eval_cfg["eval_profile"]),
+                "candidate_timeout_ms": float(eval_cfg["candidate_timeout_ms"]),
+                "opponent_timeout_ms": float(eval_cfg["opponent_timeout_ms"]),
+                "eval_games_by_opponent": dict(eval_cfg.get("games_by_opponent", {})),
                 "buffer_size": int(len(replay)),
                 "updated_at": _utc_now_iso(),
             }

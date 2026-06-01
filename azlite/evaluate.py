@@ -18,7 +18,9 @@ from azlite.eval_core import (
     KAGGLE_P95_TIMEOUT_SEC,
     UnifiedAgent,
     create_agent,
+    games_for_opponent,
     play_match,
+    resolve_eval_config,
 )
 
 
@@ -285,10 +287,22 @@ def _main() -> None:
         default="random,negamax,mcts_lite",
         help="Comma-separated opponents specs",
     )
+    parser.add_argument(
+        "--eval-profile",
+        type=str,
+        choices=("quick", "strong_local", "kaggle_like"),
+        default="kaggle_like",
+    )
     parser.add_argument("--games", type=int, default=200)
+    parser.add_argument("--eval-games-random", type=int, default=None)
+    parser.add_argument("--eval-games-negamax", type=int, default=None)
+    parser.add_argument("--eval-games-mcts-lite", type=int, default=None)
+    parser.add_argument("--eval-games-previous-best", type=int, default=None)
     parser.add_argument("--simulations", type=int, default=100)
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--candidate-timeout-ms", type=float, default=None)
+    parser.add_argument("--opponent-timeout-ms", type=float, default=None)
     parser.add_argument("--max-opponent-timeout-rate", type=float, default=0.05)
     parser.add_argument("--max-candidate-timeout-rate", type=float, default=0.01)
     parser.add_argument(
@@ -306,6 +320,20 @@ def _main() -> None:
     parser.add_argument("--logs-dir", type=str, default="logs")
     args = parser.parse_args()
 
+    eval_cfg = resolve_eval_config(
+        eval_profile=str(args.eval_profile),
+        base_games=int(args.games),
+        candidate_timeout_ms=args.candidate_timeout_ms,
+        opponent_timeout_ms=args.opponent_timeout_ms,
+        eval_games_random=args.eval_games_random,
+        eval_games_negamax=args.eval_games_negamax,
+        eval_games_mcts_lite=args.eval_games_mcts_lite,
+        eval_games_previous_best=args.eval_games_previous_best,
+    )
+    eval_profile = str(eval_cfg["eval_profile"])
+    candidate_timeout_ms = float(eval_cfg["candidate_timeout_ms"])
+    opponent_timeout_ms = float(eval_cfg["opponent_timeout_ms"])
+
     candidate = create_agent(
         args.candidate_agent,
         checkpoint=args.checkpoint,
@@ -313,6 +341,7 @@ def _main() -> None:
         simulations=int(args.simulations),
         device=args.device,
         seed=int(args.seed),
+        time_budget_ms=candidate_timeout_ms,
     )
     opponents = _parse_agent_list(args.opponents)
     if not opponents:
@@ -327,17 +356,22 @@ def _main() -> None:
             simulations=int(args.simulations),
             device=args.device,
             seed=int(args.seed) + i + 1,
+            time_budget_ms=opponent_timeout_ms,
         )
         opponent_agents.append((opp_spec, opp))
 
     candidate_results: Dict[str, Dict[str, Any]] = {}
     for i, (opp_spec, opp_agent) in enumerate(opponent_agents):
+        games_this = games_for_opponent(eval_cfg, opp_spec)
         result = play_match(
             candidate,
             opp_agent,
-            num_games=int(args.games),
+            num_games=int(games_this),
             swap_sides=True,
             seed=int(args.seed) + 1000 + i,
+            candidate_timeout_ms=candidate_timeout_ms,
+            opponent_timeout_ms=opponent_timeout_ms,
+            eval_profile=eval_profile,
             max_opponent_timeout_rate=float(args.max_opponent_timeout_rate),
             max_candidate_timeout_rate=float(args.max_candidate_timeout_rate),
             timeout_result_policy=str(args.timeout_result_policy),
@@ -354,13 +388,17 @@ def _main() -> None:
             simulations=int(args.simulations),
             device=args.device,
             seed=int(args.seed) + 9999,
+            time_budget_ms=opponent_timeout_ms,
         )
         r_prev = play_match(
             candidate,
             prev_best_opp,
-            num_games=max(20, int(args.games)),
+            num_games=max(20, games_for_opponent(eval_cfg, "previous_best")),
             swap_sides=True,
             seed=int(args.seed) + 2000,
+            candidate_timeout_ms=candidate_timeout_ms,
+            opponent_timeout_ms=opponent_timeout_ms,
+            eval_profile=eval_profile,
             max_opponent_timeout_rate=float(args.max_opponent_timeout_rate),
             max_candidate_timeout_rate=float(args.max_candidate_timeout_rate),
             timeout_result_policy=str(args.timeout_result_policy),
@@ -378,16 +416,21 @@ def _main() -> None:
             simulations=int(args.simulations),
             device=args.device,
             seed=int(args.seed) + 3000,
+            time_budget_ms=candidate_timeout_ms,
         )
         for i, (opp_spec, opp_agent) in enumerate(opponent_agents):
             if opp_spec == "previous_best":
                 continue
+            games_this = games_for_opponent(eval_cfg, opp_spec)
             rr = play_match(
                 previous_best,
                 opp_agent,
-                num_games=int(args.games),
+                num_games=int(games_this),
                 swap_sides=True,
                 seed=int(args.seed) + 4000 + i,
+                candidate_timeout_ms=candidate_timeout_ms,
+                opponent_timeout_ms=opponent_timeout_ms,
+                eval_profile=eval_profile,
                 max_opponent_timeout_rate=float(args.max_opponent_timeout_rate),
                 max_candidate_timeout_rate=float(args.max_candidate_timeout_rate),
                 timeout_result_policy=str(args.timeout_result_policy),
@@ -419,6 +462,12 @@ def _main() -> None:
     table_text = _format_console_table(rows)
     print("\nEvaluation Matrix")
     print(f"evaluator_backend={EVALUATOR_BACKEND}")
+    print(
+        f"eval_profile={eval_profile} "
+        f"candidate_timeout_ms={candidate_timeout_ms:.0f} "
+        f"opponent_timeout_ms={opponent_timeout_ms:.0f}"
+    )
+    print(f"games_by_opponent={eval_cfg.get('games_by_opponent', {})}")
     print(table_text)
 
     print("\nGating")
@@ -429,6 +478,10 @@ def _main() -> None:
         print(f"\nWARNING: {warning}")
     for w in reliability_warnings:
         print(w)
+    if eval_profile == "strong_local":
+        print(
+            "[eval][note] strong_local is diagnostic only and should not be treated as Kaggle-equivalent."
+        )
 
     logs_dir = Path(args.logs_dir)
     logs_dir.mkdir(parents=True, exist_ok=True)
@@ -445,9 +498,13 @@ def _main() -> None:
             "checkpoint": args.checkpoint,
             "opponents": opponents,
             "games": int(args.games),
+            "games_by_opponent": dict(eval_cfg.get("games_by_opponent", {})),
             "simulations": int(args.simulations),
             "device": args.device,
             "seed": int(args.seed),
+            "eval_profile": eval_profile,
+            "candidate_timeout_ms": candidate_timeout_ms,
+            "opponent_timeout_ms": opponent_timeout_ms,
             "max_opponent_timeout_rate": float(args.max_opponent_timeout_rate),
             "max_candidate_timeout_rate": float(args.max_candidate_timeout_rate),
             "timeout_result_policy": str(args.timeout_result_policy),
@@ -474,6 +531,9 @@ def _main() -> None:
         f"- Candidate: `{args.candidate_agent}`",
         f"- Checkpoint: `{args.checkpoint}`",
         f"- Games per matchup: `{int(args.games)}`",
+        f"- Eval profile: `{eval_profile}`",
+        f"- Candidate timeout ms: `{candidate_timeout_ms:.0f}`",
+        f"- Opponent timeout ms: `{opponent_timeout_ms:.0f}`",
         f"- Simulations: `{int(args.simulations)}`",
         "",
         "## Matrix",
@@ -495,6 +555,11 @@ def _main() -> None:
         md_lines.append("## Reliability Warnings")
         for w in reliability_warnings:
             md_lines.append(f"- {w}")
+    if eval_profile == "strong_local":
+        md_lines.append("")
+        md_lines.append(
+            "- strong_local is diagnostic only and should not be treated as Kaggle-equivalent."
+        )
     md_lines.append("")
     md_lines.append(f"- JSON log: `{json_path}`")
     md_path.write_text("\n".join(md_lines), encoding="utf-8")

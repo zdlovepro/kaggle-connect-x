@@ -22,6 +22,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import numpy as np
 
 from azlite import evaluate as eval_mod
+from azlite import eval_core
 from azlite.teacher_data import (
     DEFAULT_SOURCE_MIX,
     build_teacher_dataset,
@@ -193,16 +194,33 @@ def _evaluate_checkpoint_matrix(
     checkpoint_path: Path,
     previous_best_checkpoint: Optional[Path],
     opponents: Sequence[str],
-    games: int,
     simulations: int,
     device: str,
     seed: int,
+    eval_profile: str,
+    candidate_timeout_ms: Optional[float],
+    opponent_timeout_ms: Optional[float],
+    eval_games_default: int,
+    eval_games_random: Optional[int],
+    eval_games_negamax: Optional[int],
+    eval_games_mcts_lite: Optional[int],
+    eval_games_previous_best: Optional[int],
     max_opponent_timeout_rate: float,
     max_candidate_timeout_rate: float,
     timeout_result_policy: str,
     logs_dir: Path,
     label: str,
 ) -> Dict[str, Any]:
+    eval_cfg = eval_core.resolve_eval_config(
+        eval_profile=eval_profile,
+        base_games=int(eval_games_default),
+        candidate_timeout_ms=candidate_timeout_ms,
+        opponent_timeout_ms=opponent_timeout_ms,
+        eval_games_random=eval_games_random,
+        eval_games_negamax=eval_games_negamax,
+        eval_games_mcts_lite=eval_games_mcts_lite,
+        eval_games_previous_best=eval_games_previous_best,
+    )
     candidate = eval_mod.create_agent(
         "checkpoint_puct",
         checkpoint=str(checkpoint_path),
@@ -210,6 +228,7 @@ def _evaluate_checkpoint_matrix(
         simulations=int(simulations),
         device=device,
         seed=int(seed),
+        time_budget_ms=float(eval_cfg["candidate_timeout_ms"]),
     )
 
     candidate_results: Dict[str, Dict[str, Any]] = {}
@@ -222,16 +241,21 @@ def _evaluate_checkpoint_matrix(
             simulations=int(simulations),
             device=device,
             seed=int(seed) + 100 + i,
+            time_budget_ms=float(eval_cfg["opponent_timeout_ms"]),
         )
         opponent_agents.append((spec, opp))
 
     for i, (spec, opp) in enumerate(opponent_agents):
+        games_this = eval_core.games_for_opponent(eval_cfg, spec)
         r = eval_mod.play_match(
             candidate,
             opp,
-            num_games=int(games),
+            num_games=int(games_this),
             swap_sides=True,
             seed=int(seed) + 1000 + i,
+            candidate_timeout_ms=float(eval_cfg["candidate_timeout_ms"]),
+            opponent_timeout_ms=float(eval_cfg["opponent_timeout_ms"]),
+            eval_profile=str(eval_cfg["eval_profile"]),
             max_opponent_timeout_rate=float(max_opponent_timeout_rate),
             max_candidate_timeout_rate=float(max_candidate_timeout_rate),
             timeout_result_policy=str(timeout_result_policy),
@@ -248,13 +272,17 @@ def _evaluate_checkpoint_matrix(
             simulations=int(simulations),
             device=device,
             seed=int(seed) + 2222,
+            time_budget_ms=float(eval_cfg["opponent_timeout_ms"]),
         )
         r_prev = eval_mod.play_match(
             candidate,
             prev_best_agent,
-            num_games=max(20, int(games)),
+            num_games=max(20, eval_core.games_for_opponent(eval_cfg, "previous_best")),
             swap_sides=True,
             seed=int(seed) + 2223,
+            candidate_timeout_ms=float(eval_cfg["candidate_timeout_ms"]),
+            opponent_timeout_ms=float(eval_cfg["opponent_timeout_ms"]),
+            eval_profile=str(eval_cfg["eval_profile"]),
             max_opponent_timeout_rate=float(max_opponent_timeout_rate),
             max_candidate_timeout_rate=float(max_candidate_timeout_rate),
             timeout_result_policy=str(timeout_result_policy),
@@ -264,12 +292,16 @@ def _evaluate_checkpoint_matrix(
 
         previous_best_results = {}
         for i, (spec, opp) in enumerate(opponent_agents):
+            games_this = eval_core.games_for_opponent(eval_cfg, spec)
             rr = eval_mod.play_match(
                 prev_best_agent,
                 opp,
-                num_games=int(games),
+                num_games=int(games_this),
                 swap_sides=True,
                 seed=int(seed) + 3000 + i,
+                candidate_timeout_ms=float(eval_cfg["candidate_timeout_ms"]),
+                opponent_timeout_ms=float(eval_cfg["opponent_timeout_ms"]),
+                eval_profile=str(eval_cfg["eval_profile"]),
                 max_opponent_timeout_rate=float(max_opponent_timeout_rate),
                 max_candidate_timeout_rate=float(max_candidate_timeout_rate),
                 timeout_result_policy=str(timeout_result_policy),
@@ -304,6 +336,11 @@ def _evaluate_checkpoint_matrix(
                     overall_unreliable_reasons.append(f"{opp}: {reason}")
             else:
                 overall_unreliable_reasons.append(f"{opp}: unreliable matchup")
+    if str(eval_cfg["eval_profile"]) == "strong_local" and reliability_warnings:
+        print(
+            "[eval][warning] strong_local still has opponent timeouts; "
+            "results are diagnostic and not Kaggle-equivalent."
+        )
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     json_path = logs_dir / f"pipeline_eval_{label}_{ts}.json"
@@ -313,6 +350,7 @@ def _evaluate_checkpoint_matrix(
         "created_at": _utc_now_iso(),
         "label": label,
         "evaluator_backend": eval_mod.EVALUATOR_BACKEND,
+        "eval_profile": str(eval_cfg["eval_profile"]),
         "candidate_checkpoint": str(checkpoint_path.resolve()),
         "checkpoint": str(checkpoint_path.resolve()),
         "previous_best_checkpoint": (
@@ -332,10 +370,14 @@ def _evaluate_checkpoint_matrix(
             "reliability_warnings": reliability_warnings,
         },
         "config": {
-            "games": int(games),
+            "games": int(eval_games_default),
+            "games_by_opponent": dict(eval_cfg.get("games_by_opponent", {})),
             "simulations": int(simulations),
             "device": device,
             "seed": int(seed),
+            "eval_profile": str(eval_cfg["eval_profile"]),
+            "candidate_timeout_ms": float(eval_cfg["candidate_timeout_ms"]),
+            "opponent_timeout_ms": float(eval_cfg["opponent_timeout_ms"]),
             "max_opponent_timeout_rate": float(max_opponent_timeout_rate),
             "max_candidate_timeout_rate": float(max_candidate_timeout_rate),
             "timeout_result_policy": str(timeout_result_policy),
@@ -349,6 +391,9 @@ def _evaluate_checkpoint_matrix(
         "",
         f"- Label: `{label}`",
         f"- Evaluator backend: `{eval_mod.EVALUATOR_BACKEND}`",
+        f"- Eval profile: `{eval_cfg['eval_profile']}`",
+        f"- Candidate timeout ms: `{float(eval_cfg['candidate_timeout_ms']):.0f}`",
+        f"- Opponent timeout ms: `{float(eval_cfg['opponent_timeout_ms']):.0f}`",
         f"- Checkpoint: `{checkpoint_path}`",
         f"- Previous best: `{payload['previous_best_checkpoint']}`",
         "",
@@ -371,6 +416,14 @@ def _evaluate_checkpoint_matrix(
         md_lines.extend(["", "## Unreliable Reasons"])
         for reason in overall_unreliable_reasons:
             md_lines.append(f"- {reason}")
+    if str(eval_cfg["eval_profile"]) == "strong_local":
+        md_lines.extend(
+            [
+                "",
+                "## Note",
+                "- strong_local is diagnostic only and should not be treated as Kaggle-equivalent.",
+            ]
+        )
     md_path.write_text("\n".join(md_lines), encoding="utf-8")
 
     payload["log_paths"] = {
@@ -535,6 +588,8 @@ def _write_training_summary(
     recent = history[-5:]
     final_latest_eval = _find_last_eval("final_latest_eval")
     final_best_eval = _find_last_eval("final_best_eval")
+    final_latest_eval_strong = _find_last_eval("final_latest_eval_strong_local")
+    final_best_eval_strong = _find_last_eval("final_best_eval_strong_local")
     bottleneck_source = final_latest_eval or (recent[-1] if recent else None)
     bottleneck = _infer_bottleneck(bottleneck_source)
     recs = _recommend_next_params(args, bottleneck_source, bottleneck)
@@ -554,6 +609,37 @@ def _write_training_summary(
 
     recommended_label = "latest.pt" if latest_passed else "best.pt"
     recommended_path = latest_ckpt if latest_passed else best_ckpt
+
+    def _wr(rec: Optional[Dict[str, Any]], opp: str) -> Optional[float]:
+        if not rec:
+            return None
+        cand = rec.get("candidate_results", {}) or {}
+        if opp not in cand:
+            return None
+        return float(cand[opp].get("win_rate", 0.0))
+
+    strong_local_diagnostic_warning = None
+    strong_best_nega = _wr(final_best_eval_strong, "negamax")
+    kaggle_best_nega = _wr(final_best_eval, "negamax")
+    strong_latest_nega = _wr(final_latest_eval_strong, "negamax")
+    kaggle_latest_nega = _wr(final_latest_eval, "negamax")
+    if (
+        strong_best_nega is not None
+        and kaggle_best_nega is not None
+        and (strong_best_nega - kaggle_best_nega) >= 0.10
+    ):
+        strong_local_diagnostic_warning = (
+            "strong_local is diagnostic only and should not be treated as Kaggle-equivalent."
+        )
+    if (
+        strong_local_diagnostic_warning is None
+        and strong_latest_nega is not None
+        and kaggle_latest_nega is not None
+        and (strong_latest_nega - kaggle_latest_nega) >= 0.10
+    ):
+        strong_local_diagnostic_warning = (
+            "strong_local is diagnostic only and should not be treated as Kaggle-equivalent."
+        )
 
     lines = [
         "# Training Summary",
@@ -577,6 +663,23 @@ def _write_training_summary(
         f"| vs mcts_lite | {_fmt_match(final_best_eval, 'mcts_lite')} | {_fmt_match(final_latest_eval, 'mcts_lite')} |",
         "",
     ]
+
+    if final_best_eval_strong or final_latest_eval_strong:
+        lines.extend(
+            [
+                "## Strong Local Diagnostic",
+                "| Metric | best.pt | latest.pt |",
+                "|---|---|---|",
+                f"| Label | final_best_eval_strong_local | final_latest_eval_strong_local |",
+                f"| vs random | {_fmt_match(final_best_eval_strong, 'random')} | {_fmt_match(final_latest_eval_strong, 'random')} |",
+                f"| vs negamax | {_fmt_match(final_best_eval_strong, 'negamax')} | {_fmt_match(final_latest_eval_strong, 'negamax')} |",
+                f"| vs mcts_lite | {_fmt_match(final_best_eval_strong, 'mcts_lite')} | {_fmt_match(final_latest_eval_strong, 'mcts_lite')} |",
+                "",
+            ]
+        )
+    if strong_local_diagnostic_warning:
+        lines.append(f"- {strong_local_diagnostic_warning}")
+        lines.append("")
 
     if (final_best_eval and not best_reliable) or (final_latest_eval and not latest_reliable):
         lines.append("- Final comparison contains unreliable eval(s); those rows are not valid for strength ranking.")
@@ -707,10 +810,17 @@ def _run_bootstrap(
                 checkpoint_path=pretrain_ckpt,
                 previous_best_checkpoint=None,
                 opponents=opponents,
-                games=int(args.eval_games),
                 simulations=int(args.simulations),
                 device=str(args.device),
                 seed=int(args.seed),
+                eval_profile=str(args.eval_profile),
+                candidate_timeout_ms=args.candidate_timeout_ms,
+                opponent_timeout_ms=args.opponent_timeout_ms,
+                eval_games_default=int(args.eval_games),
+                eval_games_random=args.eval_games_random,
+                eval_games_negamax=args.eval_games_negamax,
+                eval_games_mcts_lite=args.eval_games_mcts_lite,
+                eval_games_previous_best=args.eval_games_previous_best,
                 max_opponent_timeout_rate=float(args.max_opponent_timeout_rate),
                 max_candidate_timeout_rate=float(args.max_candidate_timeout_rate),
                 timeout_result_policy=str(args.timeout_result_policy),
@@ -793,6 +903,8 @@ def _run_selfplay(
         str(int(args.eval_interval)),
         "--eval-games",
         str(int(args.eval_games)),
+        "--eval-profile",
+        str(args.train_eval_profile),
         "--max-opponent-timeout-rate",
         str(float(args.max_opponent_timeout_rate)),
         "--max-candidate-timeout-rate",
@@ -802,6 +914,16 @@ def _run_selfplay(
         "--seed",
         str(int(args.seed)),
     ]
+    if args.candidate_timeout_ms is not None:
+        cmd.extend(["--candidate-timeout-ms", str(float(args.candidate_timeout_ms))])
+    if args.opponent_timeout_ms is not None:
+        cmd.extend(["--opponent-timeout-ms", str(float(args.opponent_timeout_ms))])
+    if args.eval_games_random is not None:
+        cmd.extend(["--eval-games-random", str(int(args.eval_games_random))])
+    if args.eval_games_negamax is not None:
+        cmd.extend(["--eval-games-negamax", str(int(args.eval_games_negamax))])
+    if args.eval_games_previous_best is not None:
+        cmd.extend(["--eval-games-previous-best", str(int(args.eval_games_previous_best))])
     if args.resume:
         cmd.append("--resume")
     if start_ckpt is not None and start_ckpt.exists() and not args.resume:
@@ -824,66 +946,59 @@ def _run_selfplay(
     if not isinstance(history, list):
         history = []
 
-    eval_payload_latest: Optional[Dict[str, Any]] = None
-    eval_payload_best: Optional[Dict[str, Any]] = None
+    final_profiles: List[str] = ["kaggle_like"]
+    if not bool(args.skip_strong_local_final_eval):
+        final_profiles.append("strong_local")
+
+    final_eval_bundle: Dict[str, Dict[str, Any]] = {}
+
+    def _run_final_eval_group(base_label: str, checkpoint: Path, seed_base: int) -> None:
+        nonlocal history
+        for profile_idx, profile_name in enumerate(final_profiles):
+            label = base_label if profile_name == "kaggle_like" else f"{base_label}_{profile_name}"
+            try:
+                payload = _evaluate_checkpoint_matrix(
+                    checkpoint_path=checkpoint,
+                    previous_best_checkpoint=prev_best_snapshot,
+                    opponents=opponents,
+                    simulations=int(args.simulations),
+                    device=str(args.device),
+                    seed=int(args.seed) + seed_base + profile_idx,
+                    eval_profile=str(profile_name),
+                    candidate_timeout_ms=args.candidate_timeout_ms,
+                    opponent_timeout_ms=args.opponent_timeout_ms,
+                    eval_games_default=int(args.eval_games),
+                    eval_games_random=args.eval_games_random,
+                    eval_games_negamax=args.eval_games_negamax,
+                    eval_games_mcts_lite=args.eval_games_mcts_lite,
+                    eval_games_previous_best=args.eval_games_previous_best,
+                    max_opponent_timeout_rate=float(args.max_opponent_timeout_rate),
+                    max_candidate_timeout_rate=float(args.max_candidate_timeout_rate),
+                    timeout_result_policy=str(args.timeout_result_policy),
+                    logs_dir=paths.logs,
+                    label=label,
+                )
+                final_eval_bundle[label] = payload
+                history = _append_eval_history(paths.eval_history, payload)
+                print(
+                    f"[pipeline] {label}: passed={payload['gating']['passed']} "
+                    f"reliable={payload.get('reliable', True)} "
+                    f"reasons={payload['gating']['reasons']}"
+                )
+            except Exception as exc:
+                print(f"[pipeline] WARN: {label} failed, checkpoint kept. err={exc}")
+                traceback.print_exc()
+                history = _load_json(paths.eval_history, [])
+                if not isinstance(history, list):
+                    history = []
 
     if latest_ckpt.exists():
-        try:
-            eval_payload_latest = _evaluate_checkpoint_matrix(
-                checkpoint_path=latest_ckpt,
-                previous_best_checkpoint=prev_best_snapshot,
-                opponents=opponents,
-                games=int(args.eval_games),
-                simulations=int(args.simulations),
-                device=str(args.device),
-                seed=int(args.seed) + 77,
-                max_opponent_timeout_rate=float(args.max_opponent_timeout_rate),
-                max_candidate_timeout_rate=float(args.max_candidate_timeout_rate),
-                timeout_result_policy=str(args.timeout_result_policy),
-                logs_dir=paths.logs,
-                label="final_latest_eval",
-            )
-            history = _append_eval_history(paths.eval_history, eval_payload_latest)
-            print(
-                f"[pipeline] final_latest_eval: passed={eval_payload_latest['gating']['passed']} "
-                f"reliable={eval_payload_latest.get('reliable', True)} "
-                f"reasons={eval_payload_latest['gating']['reasons']}"
-            )
-        except Exception as exc:
-            print(f"[pipeline] WARN: final_latest_eval failed, checkpoint kept. err={exc}")
-            traceback.print_exc()
-            history = _load_json(paths.eval_history, [])
-            if not isinstance(history, list):
-                history = []
-
+        _run_final_eval_group("final_latest_eval", latest_ckpt, seed_base=77)
     if best_ckpt.exists():
-        try:
-            eval_payload_best = _evaluate_checkpoint_matrix(
-                checkpoint_path=best_ckpt,
-                previous_best_checkpoint=prev_best_snapshot,
-                opponents=opponents,
-                games=int(args.eval_games),
-                simulations=int(args.simulations),
-                device=str(args.device),
-                seed=int(args.seed) + 78,
-                max_opponent_timeout_rate=float(args.max_opponent_timeout_rate),
-                max_candidate_timeout_rate=float(args.max_candidate_timeout_rate),
-                timeout_result_policy=str(args.timeout_result_policy),
-                logs_dir=paths.logs,
-                label="final_best_eval",
-            )
-            history = _append_eval_history(paths.eval_history, eval_payload_best)
-            print(
-                f"[pipeline] final_best_eval: passed={eval_payload_best['gating']['passed']} "
-                f"reliable={eval_payload_best.get('reliable', True)} "
-                f"reasons={eval_payload_best['gating']['reasons']}"
-            )
-        except Exception as exc:
-            print(f"[pipeline] WARN: final_best_eval failed, checkpoint kept. err={exc}")
-            traceback.print_exc()
-            history = _load_json(paths.eval_history, [])
-            if not isinstance(history, list):
-                history = []
+        _run_final_eval_group("final_best_eval", best_ckpt, seed_base=177)
+
+    eval_payload_latest: Optional[Dict[str, Any]] = final_eval_bundle.get("final_latest_eval")
+    eval_payload_best: Optional[Dict[str, Any]] = final_eval_bundle.get("final_best_eval")
 
     latest_passed_gating = bool(
         eval_payload_latest is not None
@@ -922,11 +1037,6 @@ def _run_selfplay(
         except Exception:
             best_iteration = None
 
-    final_eval_bundle = {
-        "final_latest_eval": eval_payload_latest,
-        "final_best_eval": eval_payload_best,
-    }
-
     extra_meta = _build_context_metadata(
         args,
         git_info,
@@ -948,6 +1058,9 @@ def _run_selfplay(
     if recommended_ckpt is not None:
         print(f"[pipeline] recommendation: use {recommended_ckpt}")
 
+    eval_payload_latest_strong = final_eval_bundle.get("final_latest_eval_strong_local")
+    eval_payload_best_strong = final_eval_bundle.get("final_best_eval_strong_local")
+
     state.update(
         {
             "last_iteration": int(last_iteration) if last_iteration is not None else 0,
@@ -962,6 +1075,8 @@ def _run_selfplay(
                 eval_payload_best is not None and bool(eval_payload_best.get("reliable", False))
             ),
             "recommended_checkpoint": str(recommended_ckpt.resolve()) if recommended_ckpt else "",
+            "final_eval_profiles": final_profiles,
+            "train_eval_profile": str(args.train_eval_profile),
             "final_eval_latest_log": (
                 str(eval_payload_latest.get("log_paths", {}).get("json", ""))
                 if eval_payload_latest is not None
@@ -970,6 +1085,16 @@ def _run_selfplay(
             "final_eval_best_log": (
                 str(eval_payload_best.get("log_paths", {}).get("json", ""))
                 if eval_payload_best is not None
+                else ""
+            ),
+            "final_eval_latest_strong_local_log": (
+                str(eval_payload_latest_strong.get("log_paths", {}).get("json", ""))
+                if eval_payload_latest_strong is not None
+                else ""
+            ),
+            "final_eval_best_strong_local_log": (
+                str(eval_payload_best_strong.get("log_paths", {}).get("json", ""))
+                if eval_payload_best_strong is not None
                 else ""
             ),
             "train_checkpoint_dir": str(ckpt_dir.resolve()),
@@ -1024,6 +1149,26 @@ def _main() -> None:
     parser.add_argument("--buffer-size", type=int, default=200000)
     parser.add_argument("--eval-interval", type=int, default=1)
     parser.add_argument("--eval-games", type=int, default=200)
+    parser.add_argument(
+        "--eval-profile",
+        type=str,
+        choices=("quick", "strong_local", "kaggle_like"),
+        default="kaggle_like",
+        help="Primary pipeline eval profile (kaggle_like by default).",
+    )
+    parser.add_argument(
+        "--train-eval-profile",
+        type=str,
+        choices=("quick", "strong_local", "kaggle_like"),
+        default="quick",
+        help="Profile used by azlite.train quick evaluations.",
+    )
+    parser.add_argument("--candidate-timeout-ms", type=float, default=None)
+    parser.add_argument("--opponent-timeout-ms", type=float, default=None)
+    parser.add_argument("--eval-games-random", type=int, default=None)
+    parser.add_argument("--eval-games-negamax", type=int, default=None)
+    parser.add_argument("--eval-games-mcts-lite", type=int, default=None)
+    parser.add_argument("--eval-games-previous-best", type=int, default=None)
     parser.add_argument("--max-opponent-timeout-rate", type=float, default=0.05)
     parser.add_argument("--max-candidate-timeout-rate", type=float, default=0.01)
     parser.add_argument(
@@ -1033,6 +1178,7 @@ def _main() -> None:
         default="fail_eval",
     )
     parser.add_argument("--opponents", type=str, default="random,negamax,mcts_lite")
+    parser.add_argument("--skip-strong-local-final-eval", action="store_true")
 
     # Paths / outputs.
     parser.add_argument("--checkpoint-dir", type=str, default="checkpoints/azlite_train")

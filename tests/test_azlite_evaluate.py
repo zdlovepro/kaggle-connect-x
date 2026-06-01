@@ -1,5 +1,6 @@
 import time
 
+from azlite.eval_core import games_for_opponent, resolve_eval_config
 from azlite.evaluate import (
     UnifiedAgent,
     _warn_random_overfit,
@@ -46,6 +47,10 @@ def test_play_match_records_basic_metrics():
     assert "opponent_timeouts" in result
     assert "candidate_timeout_rate" in result
     assert "opponent_timeout_rate" in result
+    assert "candidate_avg_move_ms" in result
+    assert "candidate_max_move_ms" in result
+    assert "opponent_avg_move_ms" in result
+    assert "opponent_max_move_ms" in result
     assert "reliable" in result
     assert "unreliable_reasons" in result
     assert "invalid_actions" in result
@@ -171,3 +176,24 @@ def test_should_promote_candidate_rejects_unreliable_timeout_matchup():
     passed, reasons = should_promote_candidate(candidate_results, previous_best_results=None)
     assert passed is False
     assert any("opponent_timeout_rate_exceeded" in r for r in reasons)
+
+
+def test_resolve_eval_config_quick_defaults():
+    cfg = resolve_eval_config("quick", base_games=10)
+    assert cfg["eval_profile"] == "quick"
+    assert cfg["candidate_timeout_ms"] == 2000.0
+    assert cfg["opponent_timeout_ms"] == 4000.0
+    assert games_for_opponent(cfg, "negamax") > 0
+
+
+def test_resolve_eval_config_explicit_overrides_profile():
+    cfg = resolve_eval_config(
+        "strong_local",
+        base_games=30,
+        candidate_timeout_ms=2100.0,
+        opponent_timeout_ms=4700.0,
+        eval_games_negamax=77,
+    )
+    assert cfg["candidate_timeout_ms"] == 2100.0
+    assert cfg["opponent_timeout_ms"] == 4700.0
+    assert games_for_opponent(cfg, "negamax") == 77
