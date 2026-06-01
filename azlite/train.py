@@ -10,6 +10,7 @@ import argparse
 import json
 import math
 import random
+import shutil
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -38,6 +39,7 @@ COMPOSITE_WEIGHTS: Dict[str, float] = {
     "previous_best": 0.25,
 }
 COMPOSITE_KEY_METRICS = ("negamax", "mcts_lite", "previous_best")
+PREVIOUS_BEST_SIDE_BIAS_THRESHOLD = 0.40
 
 
 def _utc_now_iso() -> str:
@@ -74,8 +76,15 @@ class EvalResult:
     losses: int
     draws: int
     win_rate: float
+    first_player_wins: int
+    first_player_losses: int
+    first_player_draws: int
     first_player_win_rate: float
+    second_player_wins: int
+    second_player_losses: int
+    second_player_draws: int
     second_player_win_rate: float
+    side_bias: float = 0.0
     candidate_timeouts: int = 0
     opponent_timeouts: int = 0
     candidate_invalid_actions: int = 0
@@ -175,8 +184,15 @@ def _evaluate_vs(
         losses=int(match["losses"]),
         draws=int(match["draws"]),
         win_rate=float(match["win_rate"]),
+        first_player_wins=int(match.get("first_player_wins", 0)),
+        first_player_losses=int(match.get("first_player_losses", 0)),
+        first_player_draws=int(match.get("first_player_draws", 0)),
         first_player_win_rate=float(match.get("first_player_win_rate", 0.0)),
+        second_player_wins=int(match.get("second_player_wins", 0)),
+        second_player_losses=int(match.get("second_player_losses", 0)),
+        second_player_draws=int(match.get("second_player_draws", 0)),
         second_player_win_rate=float(match.get("second_player_win_rate", 0.0)),
+        side_bias=float(match.get("side_bias", 0.0)),
         candidate_timeouts=int(match.get("candidate_timeouts", match["timeouts"]["agent_a"])),
         opponent_timeouts=int(match.get("opponent_timeouts", match["timeouts"]["agent_b"])),
         candidate_invalid_actions=int(invalid.get("candidate", match["illegal_actions"]["agent_a"])),
@@ -195,8 +211,11 @@ def _format_eval(name: str, result: Optional[EvalResult]) -> str:
     msg = (
         f"{name}: {result.wins}W/{result.losses}L/{result.draws}D "
         f"WR={result.win_rate*100:.1f}% "
-        f"FP={result.first_player_win_rate*100:.1f}% "
-        f"SP={result.second_player_win_rate*100:.1f}%"
+        f"FP={result.first_player_wins}/{result.first_player_losses}/{result.first_player_draws} "
+        f"({result.first_player_win_rate*100:.1f}%) "
+        f"SP={result.second_player_wins}/{result.second_player_losses}/{result.second_player_draws} "
+        f"({result.second_player_win_rate*100:.1f}%) "
+        f"BIAS={result.side_bias*100:.1f}%"
     )
     msg += (
         f" TO(cand/opp)={result.candidate_timeouts}/{result.opponent_timeouts} "
@@ -412,6 +431,7 @@ def _should_promote_to_best(
     eval_mcts_lite: Optional[EvalResult],
     eval_prev_best: Optional[EvalResult],
     best_metrics: Dict[str, float],
+    previous_best_required: bool = False,
 ) -> Tuple[bool, str, float, Dict[str, object]]:
     composite_details = _build_composite_details(
         eval_random=eval_random,
@@ -436,11 +456,21 @@ def _should_promote_to_best(
     if eval_mcts_lite is not None and (not eval_mcts_lite.reliable):
         return False, "mcts_lite matchup unreliable due opponent timeouts", score, composite_details
 
+    if previous_best_required and eval_prev_best is None:
+        return False, "previous-best comparison missing", score, composite_details
+
     # Guardrails: random is only sanity-check; rely on stronger opponents.
     if eval_prev_best is not None and eval_prev_best.win_rate < 0.5:
         return False, "failed vs previous best (<50%)", score, composite_details
     if eval_prev_best is not None and (not eval_prev_best.reliable):
         return False, "previous-best matchup unreliable due opponent timeouts", score, composite_details
+    if eval_prev_best is not None and float(eval_prev_best.side_bias) > PREVIOUS_BEST_SIDE_BIAS_THRESHOLD:
+        return (
+            False,
+            "previous-best eval unstable due first/second-player side bias; require more games",
+            score,
+            composite_details,
+        )
     if best_negamax >= 0.0 and eval_negamax.win_rate + 1e-9 < (best_negamax - 0.03):
         return False, "negamax regressed too much", score, composite_details
     if eval_mcts_lite is not None and best_mcts >= 0.0 and eval_mcts_lite.win_rate + 1e-9 < (best_mcts - 0.03):
@@ -558,6 +588,8 @@ def _main() -> None:
     replay_path = ckpt_dir / "replay_buffer_latest.npz"
     state_path = ckpt_dir / "train_state.json"
     selfplay_output_dir = ckpt_dir / "selfplay_npz"
+    archived_best_dir = ckpt_dir / "archived_best"
+    archived_best_dir.mkdir(parents=True, exist_ok=True)
 
     state = _load_train_state(state_path)
     best_metrics = {
@@ -567,6 +599,8 @@ def _main() -> None:
     }
     best_composite_details = state.get("best_composite_details")
     best_iteration = int(state.get("best_iteration", 0) or 0)
+    previous_best_checkpoint = str(state.get("previous_best_checkpoint", "") or "")
+    archived_best_checkpoint = str(state.get("archived_best_checkpoint", "") or "")
 
     # 1) Load model + optimizer
     if args.resume and latest_ckpt_path.exists():
@@ -671,6 +705,8 @@ def _main() -> None:
             "eval_profile": str(eval_cfg["eval_profile"]),
             "candidate_timeout_ms": float(eval_cfg["candidate_timeout_ms"]),
             "opponent_timeout_ms": float(eval_cfg["opponent_timeout_ms"]),
+            "previous_best_checkpoint": previous_best_checkpoint,
+            "archived_best_checkpoint": archived_best_checkpoint,
             "buffer_size": int(len(replay)),
             "loss": metrics,
             "self_play_avg_game_length": avg_game_length,
@@ -688,6 +724,7 @@ def _main() -> None:
         gate_reason = "evaluation skipped"
         composite = float("nan")
         composite_details: Dict[str, object] = {}
+        previous_best_required = False
 
         # 6) quick evaluation
         if int(args.eval_interval) > 0 and (iteration % int(args.eval_interval) == 0):
@@ -742,7 +779,14 @@ def _main() -> None:
                 )
 
             if best_ckpt_path.exists():
-                best_model, _, _ = _load_model_and_optimizer(best_ckpt_path, device=device, lr=float(args.lr))
+                previous_best_required = True
+                snapshot_name = f"previous_best_snapshot_iter{int(iteration):04d}.pt"
+                snapshot_path = archived_best_dir / snapshot_name
+                shutil.copy2(best_ckpt_path, snapshot_path)
+                previous_best_checkpoint = str(snapshot_path.resolve())
+                archived_best_checkpoint = previous_best_checkpoint
+
+                best_model, _, _ = _load_model_and_optimizer(snapshot_path, device=device, lr=float(args.lr))
                 best_agent = _mcts_model_agent(best_model, device=device, simulations=int(args.simulations))
                 eval_prev_best = _evaluate_vs(
                     current_agent,
@@ -766,6 +810,7 @@ def _main() -> None:
                 eval_mcts_lite=eval_mcts_lite,
                 eval_prev_best=eval_prev_best,
                 best_metrics=best_metrics,
+                previous_best_required=previous_best_required,
             )
             if gate_passed:
                 best_meta = dict(latest_meta)
@@ -778,6 +823,15 @@ def _main() -> None:
                     "negamax": eval_negamax.__dict__,
                     "mcts_lite": eval_mcts_lite.__dict__ if eval_mcts_lite else None,
                     "previous_best": eval_prev_best.__dict__ if eval_prev_best else None,
+                    "previous_best_checkpoint": previous_best_checkpoint,
+                    "side_bias_warning": bool(
+                        eval_prev_best is not None
+                        and float(eval_prev_best.side_bias) > PREVIOUS_BEST_SIDE_BIAS_THRESHOLD
+                    ),
+                    "unstable_previous_best_eval": bool(
+                        eval_prev_best is not None
+                        and float(eval_prev_best.side_bias) > PREVIOUS_BEST_SIDE_BIAS_THRESHOLD
+                    ),
                     "composite_score": float(composite),
                     "composite": composite_details,
                     "gate_reason": gate_reason,
@@ -834,9 +888,19 @@ def _main() -> None:
                 "latest_mcts_lite_win_rate": (
                     float(eval_mcts_lite.win_rate) if eval_mcts_lite is not None else None
                 ),
+                "side_bias_warning": bool(
+                    eval_prev_best is not None
+                    and float(eval_prev_best.side_bias) > PREVIOUS_BEST_SIDE_BIAS_THRESHOLD
+                ),
+                "unstable_previous_best_eval": bool(
+                    eval_prev_best is not None
+                    and float(eval_prev_best.side_bias) > PREVIOUS_BEST_SIDE_BIAS_THRESHOLD
+                ),
                 "latest_composite_details": composite_details if composite_details else None,
                 "latest_checkpoint": str(latest_ckpt_path.resolve()),
                 "best_checkpoint": str(best_ckpt_path.resolve()) if best_ckpt_path.exists() else "",
+                "previous_best_checkpoint": previous_best_checkpoint,
+                "archived_best_checkpoint": archived_best_checkpoint,
                 "eval_profile": str(eval_cfg["eval_profile"]),
                 "candidate_timeout_ms": float(eval_cfg["candidate_timeout_ms"]),
                 "opponent_timeout_ms": float(eval_cfg["opponent_timeout_ms"]),

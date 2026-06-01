@@ -542,7 +542,11 @@ def play_match(
         first_games += 1
     second_games = n - first_games if swap else 0
     first_wins = 0
+    first_losses = 0
+    first_draws = 0
     second_wins = 0
+    second_losses = 0
+    second_draws = 0
 
     for g in range(n):
         a_first = (not swap) or (g < first_games)
@@ -570,8 +574,10 @@ def play_match(
                 first_wins += 1
             elif winner == 2:
                 losses += 1
+                first_losses += 1
             else:
                 draws += 1
+                first_draws += 1
             illegal_a += int(game["illegal"][1])
             illegal_b += int(game["illegal"][2])
             timeout_a += a_timeout_this
@@ -588,8 +594,10 @@ def play_match(
                 second_wins += 1
             elif winner == 1:
                 losses += 1
+                second_losses += 1
             else:
                 draws += 1
+                second_draws += 1
             illegal_a += int(game["illegal"][2])
             illegal_b += int(game["illegal"][1])
             timeout_a += a_timeout_this
@@ -635,6 +643,7 @@ def play_match(
 
     first_wr = float(first_wins / max(1, first_games))
     second_wr = float(second_wins / max(1, second_games))
+    side_bias = float(abs(first_wr - second_wr))
     win_rate = float(wins / n)
 
     candidate_timeout_rate = float(timeout_a / max(1, n))
@@ -679,10 +688,15 @@ def play_match(
         "reliable_draws": int(reliable_draws),
         "first_player_games": int(first_games),
         "first_player_wins": int(first_wins),
+        "first_player_losses": int(first_losses),
+        "first_player_draws": int(first_draws),
         "first_player_win_rate": first_wr,
         "second_player_games": int(second_games),
         "second_player_wins": int(second_wins),
+        "second_player_losses": int(second_losses),
+        "second_player_draws": int(second_draws),
         "second_player_win_rate": second_wr,
+        "side_bias": side_bias,
         "candidate_timeouts": int(timeout_a),
         "opponent_timeouts": int(timeout_b),
         "candidate_timeout_rate": candidate_timeout_rate,

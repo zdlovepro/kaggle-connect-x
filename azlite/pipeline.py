@@ -165,6 +165,31 @@ def _warning_random_overfit(candidate_results: Dict[str, Dict[str, Any]]) -> Opt
     return None
 
 
+def _previous_best_side_bias_status(candidate_results: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+    rec = candidate_results.get("previous_best")
+    if rec is None:
+        return {
+            "available": False,
+            "side_bias_warning": False,
+            "unstable_previous_best_eval": False,
+            "side_bias": None,
+            "message": "previous_best matchup unavailable",
+        }
+    side_bias = float(rec.get("side_bias", 0.0))
+    unstable = bool(side_bias > 0.40)
+    return {
+        "available": True,
+        "side_bias_warning": bool(unstable),
+        "unstable_previous_best_eval": bool(unstable),
+        "side_bias": side_bias,
+        "message": (
+            f"previous_best side bias high ({side_bias:.3f})"
+            if unstable
+            else f"previous_best side bias acceptable ({side_bias:.3f})"
+        ),
+    }
+
+
 def _format_eval_rows(rows: Sequence[Dict[str, Any]]) -> str:
     lines = [
         "| Opponent | W/L/D | WR | FP_WR | SP_WR | Invalid(A) | Timeout(A) | Timeout(B) | AvgStepMs(A) | P95StepMs(A) |",
@@ -264,6 +289,9 @@ def _evaluate_checkpoint_matrix(
         candidate_results[spec] = r
 
     previous_best_results: Optional[Dict[str, Dict[str, Any]]] = None
+    previous_best_available = bool(
+        previous_best_checkpoint is not None and previous_best_checkpoint.exists()
+    )
     if previous_best_checkpoint is not None and previous_best_checkpoint.exists():
         prev_best_agent = eval_mod.create_agent(
             "previous_best",
@@ -317,6 +345,19 @@ def _evaluate_checkpoint_matrix(
     )
     composite = eval_mod.compute_composite(candidate_results)
     warning = _warning_random_overfit(candidate_results)
+    prev_bias_status = _previous_best_side_bias_status(candidate_results)
+    previous_best_available = bool(prev_bias_status.get("available", False))
+    require_previous_best_for_label = str(label).startswith("final_")
+    if require_previous_best_for_label and (not previous_best_available):
+        passed = False
+        reasons.append(
+            "previous_best comparison unavailable; final gating requires previous-best matchup."
+        )
+    if require_previous_best_for_label and bool(prev_bias_status.get("unstable_previous_best_eval", False)):
+        passed = False
+        reasons.append(
+            "previous_best matchup unstable due severe first/second-player side bias; require more games."
+        )
     reliability_warnings = []
     overall_reliable = True
     overall_unreliable_reasons: List[str] = []
@@ -362,6 +403,11 @@ def _evaluate_checkpoint_matrix(
         "opponents": list(opponents),
         "reliable": bool(overall_reliable),
         "unreliable_reasons": overall_unreliable_reasons,
+        "previous_best_available": bool(previous_best_available),
+        "side_bias_warning": bool(prev_bias_status.get("side_bias_warning", False)),
+        "unstable_previous_best_eval": bool(
+            prev_bias_status.get("unstable_previous_best_eval", False)
+        ),
         "candidate_results": candidate_results,
         "previous_best_results": previous_best_results,
         "composite": composite,
@@ -398,6 +444,9 @@ def _evaluate_checkpoint_matrix(
         f"- Opponent timeout ms: `{float(eval_cfg['opponent_timeout_ms']):.0f}`",
         f"- Checkpoint: `{checkpoint_path}`",
         f"- Previous best: `{payload['previous_best_checkpoint']}`",
+        f"- previous_best_available: `{bool(previous_best_available)}`",
+        f"- side_bias_warning: `{bool(prev_bias_status.get('side_bias_warning', False))}`",
+        f"- unstable_previous_best_eval: `{bool(prev_bias_status.get('unstable_previous_best_eval', False))}`",
         "",
         "## Matrix",
         _format_eval_rows(rows),
@@ -419,6 +468,8 @@ def _evaluate_checkpoint_matrix(
         md_lines.extend(["", "## Reliability Warnings"])
         for w in reliability_warnings:
             md_lines.append(f"- {w}")
+    if prev_bias_status.get("side_bias_warning", False):
+        md_lines.extend(["", "## Side Bias Warning", f"- {prev_bias_status.get('message', '')}"])
     if overall_unreliable_reasons:
         md_lines.extend(["", "## Unreliable Reasons"])
         for reason in overall_unreliable_reasons:
@@ -592,6 +643,11 @@ def _write_training_summary(
             return f"{base} [UNRELIABLE, reliable={rel_wr:.1f}%/{rel_games}]"
         return base
 
+    def _fmt_bool(rec: Optional[Dict[str, Any]], key: str) -> str:
+        if not rec:
+            return "n/a"
+        return str(bool(rec.get(key, False)))
+
     recent = history[-5:]
     final_latest_eval = _find_last_eval("final_latest_eval")
     final_best_eval = _find_last_eval("final_best_eval")
@@ -665,6 +721,9 @@ def _write_training_summary(
         f"| Iteration | {best_iteration} | {latest_iteration} |",
         f"| Reliable | {bool(final_best_eval.get('reliable', False)) if final_best_eval else 'n/a'} | {bool(final_latest_eval.get('reliable', False)) if final_latest_eval else 'n/a'} |",
         f"| Gating passed | {bool(final_best_eval.get('gating', {}).get('passed', False)) if final_best_eval else 'n/a'} | {bool(final_latest_eval.get('gating', {}).get('passed', False)) if final_latest_eval else 'n/a'} |",
+        f"| previous_best_available | {_fmt_bool(final_best_eval, 'previous_best_available')} | {_fmt_bool(final_latest_eval, 'previous_best_available')} |",
+        f"| side_bias_warning | {_fmt_bool(final_best_eval, 'side_bias_warning')} | {_fmt_bool(final_latest_eval, 'side_bias_warning')} |",
+        f"| unstable_previous_best_eval | {_fmt_bool(final_best_eval, 'unstable_previous_best_eval')} | {_fmt_bool(final_latest_eval, 'unstable_previous_best_eval')} |",
         f"| vs random | {_fmt_match(final_best_eval, 'random')} | {_fmt_match(final_latest_eval, 'random')} |",
         f"| vs negamax | {_fmt_match(final_best_eval, 'negamax')} | {_fmt_match(final_latest_eval, 'negamax')} |",
         f"| vs mcts_lite | {_fmt_match(final_best_eval, 'mcts_lite')} | {_fmt_match(final_latest_eval, 'mcts_lite')} |",
@@ -690,6 +749,26 @@ def _write_training_summary(
 
     if (final_best_eval and not best_reliable) or (final_latest_eval and not latest_reliable):
         lines.append("- Final comparison contains unreliable eval(s); those rows are not valid for strength ranking.")
+        lines.append("")
+
+    best_prev_available = bool(final_best_eval and final_best_eval.get("previous_best_available", False))
+    latest_prev_available = bool(final_latest_eval and final_latest_eval.get("previous_best_available", False))
+    if final_best_eval and (not best_prev_available):
+        lines.append("- previous_best_available=false for final_best_eval; this eval cannot validate previous-best regression.")
+        lines.append("")
+    if final_latest_eval and (not latest_prev_available):
+        lines.append("- previous_best_available=false for final_latest_eval; this eval cannot validate previous-best regression.")
+        lines.append("")
+
+    best_side_bias_warn = bool(final_best_eval and final_best_eval.get("side_bias_warning", False))
+    latest_side_bias_warn = bool(final_latest_eval and final_latest_eval.get("side_bias_warning", False))
+    unstable_prev_eval = bool(
+        (final_best_eval and final_best_eval.get("unstable_previous_best_eval", False))
+        or (final_latest_eval and final_latest_eval.get("unstable_previous_best_eval", False))
+    )
+    if best_side_bias_warn or latest_side_bias_warn or unstable_prev_eval:
+        lines.append("- side_bias_warning=true: previous_best matchup shows strong FP/SP asymmetry; treat comparison as unstable.")
+        lines.append("- unstable_previous_best_eval=true: require larger game count before promotion decisions.")
         lines.append("")
 
     if latest_ckpt and (not latest_passed):
@@ -951,6 +1030,35 @@ def _run_selfplay(
     if (not latest_ckpt.exists()) and (not best_ckpt.exists()):
         raise RuntimeError("Training finished but neither latest.pt nor best.pt exists.")
 
+    train_state_after_train = _load_json(ckpt_dir / "train_state.json", {})
+    if not isinstance(train_state_after_train, dict):
+        train_state_after_train = {}
+
+    final_previous_best_checkpoint: Optional[Path] = None
+    previous_best_candidates: List[Path] = []
+    for raw in (
+        train_state_after_train.get("previous_best_checkpoint"),
+        train_state_after_train.get("archived_best_checkpoint"),
+    ):
+        if not raw:
+            continue
+        try:
+            p = Path(str(raw))
+            if p.exists():
+                previous_best_candidates.append(p)
+        except Exception:
+            continue
+    if prev_best_snapshot is not None and prev_best_snapshot.exists():
+        previous_best_candidates.append(prev_best_snapshot)
+    if previous_best_candidates:
+        final_previous_best_checkpoint = previous_best_candidates[0]
+        print(f"[pipeline] selfplay: final eval previous_best -> {final_previous_best_checkpoint}")
+    else:
+        print(
+            "[pipeline] WARN: previous best checkpoint unavailable for final eval; "
+            "previous_best_available=false will be recorded."
+        )
+
     opponents = [x.strip() for x in str(args.opponents).split(",") if x.strip()]
     history = _load_json(paths.eval_history, [])
     if not isinstance(history, list):
@@ -969,7 +1077,7 @@ def _run_selfplay(
             try:
                 payload = _evaluate_checkpoint_matrix(
                     checkpoint_path=checkpoint,
-                    previous_best_checkpoint=prev_best_snapshot,
+                    previous_best_checkpoint=final_previous_best_checkpoint,
                     opponents=opponents,
                     simulations=int(args.simulations),
                     device=str(args.device),
@@ -1033,7 +1141,7 @@ def _run_selfplay(
             print(f"[pipeline] WARN: submission build failed (checkpoint unaffected). err={exc}")
             traceback.print_exc()
 
-    train_state = _load_json(ckpt_dir / "train_state.json", {})
+    train_state = train_state_after_train
     last_iteration = None
     best_iteration = None
     if isinstance(train_state, dict) and "last_iteration" in train_state:
@@ -1077,12 +1185,41 @@ def _run_selfplay(
             "best_iteration": int(best_iteration) if best_iteration is not None else 0,
             "latest_checkpoint": str(latest_ckpt.resolve()) if latest_ckpt.exists() else "",
             "best_checkpoint": str(best_ckpt.resolve()) if best_ckpt.exists() else "",
+            "previous_best_checkpoint": (
+                str(final_previous_best_checkpoint.resolve())
+                if final_previous_best_checkpoint is not None and final_previous_best_checkpoint.exists()
+                else ""
+            ),
             "latest_eval_passed_gating": bool(latest_passed_gating),
             "latest_eval_reliable": bool(
                 eval_payload_latest is not None and bool(eval_payload_latest.get("reliable", False))
             ),
             "best_eval_reliable": bool(
                 eval_payload_best is not None and bool(eval_payload_best.get("reliable", False))
+            ),
+            "latest_eval_previous_best_available": bool(
+                eval_payload_latest is not None
+                and bool(eval_payload_latest.get("previous_best_available", False))
+            ),
+            "best_eval_previous_best_available": bool(
+                eval_payload_best is not None
+                and bool(eval_payload_best.get("previous_best_available", False))
+            ),
+            "latest_eval_side_bias_warning": bool(
+                eval_payload_latest is not None
+                and bool(eval_payload_latest.get("side_bias_warning", False))
+            ),
+            "best_eval_side_bias_warning": bool(
+                eval_payload_best is not None
+                and bool(eval_payload_best.get("side_bias_warning", False))
+            ),
+            "latest_eval_unstable_previous_best_eval": bool(
+                eval_payload_latest is not None
+                and bool(eval_payload_latest.get("unstable_previous_best_eval", False))
+            ),
+            "best_eval_unstable_previous_best_eval": bool(
+                eval_payload_best is not None
+                and bool(eval_payload_best.get("unstable_previous_best_eval", False))
             ),
             "recommended_checkpoint": str(recommended_ckpt.resolve()) if recommended_ckpt else "",
             "final_eval_profiles": final_profiles,

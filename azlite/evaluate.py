@@ -30,6 +30,7 @@ COMPOSITE_WEIGHTS: Dict[str, float] = {
     "previous_best": 0.25,
 }
 COMPOSITE_KEY_METRICS: Tuple[str, ...] = ("negamax", "mcts_lite", "previous_best")
+PREVIOUS_BEST_SIDE_BIAS_THRESHOLD = 0.40
 
 
 def _ts_now() -> str:
@@ -241,6 +242,20 @@ def should_promote_candidate(
                 f"({cand_prevbest['win_rate']:.3f} < 0.550)"
             )
 
+    if cand_prevbest is not None:
+        prev_side_bias = float(cand_prevbest.get("side_bias", 0.0))
+        if prev_side_bias > PREVIOUS_BEST_SIDE_BIAS_THRESHOLD:
+            passed = False
+            reasons.append(
+                "previous_best side bias too high "
+                f"({prev_side_bias:.3f} > {PREVIOUS_BEST_SIDE_BIAS_THRESHOLD:.3f}); unstable, require more games"
+            )
+            prev_wr = float(cand_prevbest.get("win_rate", 0.0))
+            if abs(prev_wr - 0.5) <= 0.05:
+                reasons.append(
+                    "vs previous_best appears 50/50 by total WR but has strong first/second-player bias"
+                )
+
     for opp, r in candidate_results.items():
         if bool(r.get("reliable", True)):
             continue
@@ -353,6 +368,31 @@ def _collect_reliability_warnings(
             "win_rate is unreliable and excluded from gating."
         )
     return warnings
+
+
+def _previous_best_side_bias_status(candidate_results: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+    rec = candidate_results.get("previous_best")
+    if rec is None:
+        return {
+            "available": False,
+            "side_bias_warning": False,
+            "unstable_previous_best_eval": False,
+            "side_bias": None,
+            "message": "previous_best matchup unavailable",
+        }
+    side_bias = float(rec.get("side_bias", 0.0))
+    unstable = bool(side_bias > PREVIOUS_BEST_SIDE_BIAS_THRESHOLD)
+    return {
+        "available": True,
+        "side_bias_warning": bool(unstable),
+        "unstable_previous_best_eval": bool(unstable),
+        "side_bias": side_bias,
+        "message": (
+            f"previous_best side bias high ({side_bias:.3f})"
+            if unstable
+            else f"previous_best side bias acceptable ({side_bias:.3f})"
+        ),
+    }
 
 
 def _main() -> None:
@@ -533,6 +573,7 @@ def _main() -> None:
         candidate_results,
         max_opponent_timeout_rate=float(args.max_opponent_timeout_rate),
     )
+    prev_bias_status = _previous_best_side_bias_status(candidate_results)
     overall_reliable = True
     overall_unreliable_reasons: List[str] = []
     for opp, r in candidate_results.items():
@@ -566,6 +607,8 @@ def _main() -> None:
         print(f"\nWARNING: {warning}")
     for w in reliability_warnings:
         print(w)
+    if prev_bias_status.get("side_bias_warning", False):
+        print(f"[eval][warning] {prev_bias_status.get('message')}")
     if eval_profile == "strong_local":
         print(
             "[eval][note] strong_local is diagnostic only and should not be treated as Kaggle-equivalent."
@@ -600,6 +643,9 @@ def _main() -> None:
         },
         "reliable": bool(overall_reliable),
         "unreliable_reasons": overall_unreliable_reasons,
+        "previous_best_available": bool(prev_bias_status.get("available", False)),
+        "side_bias_warning": bool(prev_bias_status.get("side_bias_warning", False)),
+        "unstable_previous_best_eval": bool(prev_bias_status.get("unstable_previous_best_eval", False)),
         "candidate_results": candidate_results,
         "previous_best_results": previous_best_results,
         "composite": composite,
@@ -628,6 +674,9 @@ def _main() -> None:
         f"- Candidate timeout ms: `{candidate_timeout_ms:.0f}`",
         f"- Opponent timeout ms: `{opponent_timeout_ms:.0f}`",
         f"- Simulations: `{int(args.simulations)}`",
+        f"- previous_best_available: `{bool(prev_bias_status.get('available', False))}`",
+        f"- side_bias_warning: `{bool(prev_bias_status.get('side_bias_warning', False))}`",
+        f"- unstable_previous_best_eval: `{bool(prev_bias_status.get('unstable_previous_best_eval', False))}`",
         "",
         "## Matrix",
         _format_markdown_table(rows),
