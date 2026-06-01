@@ -1,0 +1,156 @@
+{
+  "created_at": "2026-05-31T19:48:03.851537+00:00",
+  "label": "bootstrap_pretrained",
+  "checkpoint": "D:\\205zd\\Desktop\\Kaggle\\checkpoints\\azlite_pretrained.pt",
+  "previous_best_checkpoint": null,
+  "opponents": [
+    "random",
+    "negamax",
+    "mcts_lite"
+  ],
+  "candidate_results": {
+    "random": {
+      "agent_a": "checkpoint_puct",
+      "agent_b": "random",
+      "num_games": 200,
+      "swap_sides": true,
+      "wins": 191,
+      "losses": 8,
+      "draws": 1,
+      "win_rate": 0.955,
+      "illegal_actions": {
+        "agent_a": 0,
+        "agent_b": 0,
+        "total": 0
+      },
+      "timeouts": {
+        "agent_a": 0,
+        "agent_b": 0,
+        "total": 0
+      },
+      "errors": {
+        "agent_a": 0,
+        "agent_b": 0,
+        "total": 0
+      },
+      "avg_steps": 16.54,
+      "avg_step_time_sec": {
+        "agent_a": 0.14588405729407575,
+        "agent_b": 1.4027922869406859e-05
+      },
+      "p95_step_time_sec": {
+        "agent_a": 0.2392650199952186,
+        "agent_b": 2.5000001187436283e-05
+      },
+      "step_time_sum_sec": {
+        "agent_a": 248.00289739992877,
+        "agent_b": 0.022556899974006228
+      },
+      "step_count": {
+        "agent_a": 1700,
+        "agent_b": 1608
+      },
+      "opponent": "random"
+    },
+    "negamax": {
+      "agent_a": "checkpoint_puct",
+      "agent_b": "negamax",
+      "num_games": 200,
+      "swap_sides": true,
+      "wins": 174,
+      "losses": 26,
+      "draws": 0,
+      "win_rate": 0.87,
+      "illegal_actions": {
+        "agent_a": 0,
+        "agent_b": 0,
+        "total": 0
+      },
+      "timeouts": {
+        "agent_a": 0,
+        "agent_b": 172,
+        "total": 172
+      },
+      "errors": {
+        "agent_a": 0,
+        "agent_b": 0,
+        "total": 0
+      },
+      "avg_steps": 4.92,
+      "avg_step_time_sec": {
+        "agent_a": 0.15093562797754817,
+        "agent_b": 1.1068183258371964
+      },
+      "p95_step_time_sec": {
+        "agent_a": 0.22553328000649345,
+        "agent_b": 2.167138879995036
+      },
+      "step_time_sum_sec": {
+        "agent_a": 79.84494720012299,
+        "agent_b": 693.9750902999222
+      },
+      "step_count": {
+        "agent_a": 529,
+        "agent_b": 627
+      },
+      "opponent": "negamax"
+    },
+    "mcts_lite": {
+      "agent_a": "checkpoint_puct",
+      "agent_b": "mcts_lite",
+      "num_games": 200,
+      "swap_sides": true,
+      "wins": 172,
+      "losses": 14,
+      "draws": 14,
+      "win_rate": 0.86,
+      "illegal_actions": {
+        "agent_a": 0,
+        "agent_b": 0,
+        "total": 0
+      },
+      "timeouts": {
+        "agent_a": 0,
+        "agent_b": 6,
+        "total": 6
+      },
+      "errors": {
+        "agent_a": 0,
+        "agent_b": 0,
+        "total": 0
+      },
+      "avg_steps": 20.22,
+      "avg_step_time_sec": {
+        "agent_a": 0.12165197240052335,
+        "agent_b": 1.287713026506077
+      },
+      "p95_step_time_sec": {
+        "agent_a": 0.19766189999645575,
+        "agent_b": 1.9044280050089584
+      },
+      "step_time_sum_sec": {
+        "agent_a": 250.35975920027704,
+        "agent_b": 2565.1243488001055
+      },
+      "step_count": {
+        "agent_a": 2058,
+        "agent_b": 1992
+      },
+      "opponent": "mcts_lite"
+    }
+  },
+  "previous_best_results": null,
+  "gating": {
+    "passed": true,
+    "reasons": [
+      "all gating checks passed"
+    ],
+    "warning": null
+  },
+  "config": {
+    "games": 200,
+    "simulations": 100,
+    "device": "cpu",
+    "seed": 42
+  }
+}

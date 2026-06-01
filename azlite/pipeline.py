@@ -166,19 +166,22 @@ def _warning_random_overfit(candidate_results: Dict[str, Dict[str, Any]]) -> Opt
 
 def _format_eval_rows(rows: Sequence[Dict[str, Any]]) -> str:
     lines = [
-        "| Opponent | W/L/D | WR | Illegal(A) | Timeout(A) | AvgStepMs(A) | P95StepMs(A) |",
-        "|---|---:|---:|---:|---:|---:|---:|",
+        "| Opponent | W/L/D | WR | FP_WR | SP_WR | Invalid(A) | Timeout(A) | Timeout(B) | AvgStepMs(A) | P95StepMs(A) |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for r in rows:
         lines.append(
-            "| {opp} | {w}/{l}/{d} | {wr:.1f}% | {ill} | {to} | {avg:.1f} | {p95:.1f} |".format(
+            "| {opp} | {w}/{l}/{d} | {wr:.1f}% | {fp:.1f}% | {sp:.1f}% | {ill} | {to_a} | {to_b} | {avg:.1f} | {p95:.1f} |".format(
                 opp=r.get("opponent", "?"),
                 w=int(r["wins"]),
                 l=int(r["losses"]),
                 d=int(r["draws"]),
                 wr=float(r["win_rate"]) * 100.0,
-                ill=int(r["illegal_actions"]["agent_a"]),
-                to=int(r["timeouts"]["agent_a"]),
+                fp=float(r.get("first_player_win_rate", 0.0)) * 100.0,
+                sp=float(r.get("second_player_win_rate", 0.0)) * 100.0,
+                ill=int(r.get("invalid_actions", {}).get("candidate", r["illegal_actions"]["agent_a"])),
+                to_a=int(r.get("candidate_timeouts", r["timeouts"]["agent_a"])),
+                to_b=int(r.get("opponent_timeouts", r["timeouts"]["agent_b"])),
                 avg=float(r["avg_step_time_sec"]["agent_a"]) * 1000.0,
                 p95=float(r["p95_step_time_sec"]["agent_a"]) * 1000.0,
             )
@@ -194,6 +197,9 @@ def _evaluate_checkpoint_matrix(
     simulations: int,
     device: str,
     seed: int,
+    max_opponent_timeout_rate: float,
+    max_candidate_timeout_rate: float,
+    timeout_result_policy: str,
     logs_dir: Path,
     label: str,
 ) -> Dict[str, Any]:
@@ -226,6 +232,9 @@ def _evaluate_checkpoint_matrix(
             num_games=int(games),
             swap_sides=True,
             seed=int(seed) + 1000 + i,
+            max_opponent_timeout_rate=float(max_opponent_timeout_rate),
+            max_candidate_timeout_rate=float(max_candidate_timeout_rate),
+            timeout_result_policy=str(timeout_result_policy),
         )
         r["opponent"] = spec
         candidate_results[spec] = r
@@ -246,6 +255,9 @@ def _evaluate_checkpoint_matrix(
             num_games=max(20, int(games)),
             swap_sides=True,
             seed=int(seed) + 2223,
+            max_opponent_timeout_rate=float(max_opponent_timeout_rate),
+            max_candidate_timeout_rate=float(max_candidate_timeout_rate),
+            timeout_result_policy=str(timeout_result_policy),
         )
         r_prev["opponent"] = "previous_best"
         candidate_results["previous_best"] = r_prev
@@ -258,20 +270,50 @@ def _evaluate_checkpoint_matrix(
                 num_games=int(games),
                 swap_sides=True,
                 seed=int(seed) + 3000 + i,
+                max_opponent_timeout_rate=float(max_opponent_timeout_rate),
+                max_candidate_timeout_rate=float(max_candidate_timeout_rate),
+                timeout_result_policy=str(timeout_result_policy),
             )
             rr["opponent"] = spec
             previous_best_results[spec] = rr
 
-    passed, reasons = eval_mod.should_promote_candidate(candidate_results, previous_best_results)
+    passed, reasons = eval_mod.should_promote_candidate(
+        candidate_results,
+        previous_best_results,
+        max_opponent_timeout_rate=float(max_opponent_timeout_rate),
+        max_candidate_timeout_rate=float(max_candidate_timeout_rate),
+    )
     warning = _warning_random_overfit(candidate_results)
+    reliability_warnings = []
+    overall_reliable = True
+    overall_unreliable_reasons: List[str] = []
+    for opp, r in candidate_results.items():
+        timeout_rate = float(r.get("opponent_timeout_rate", 0.0))
+        if timeout_rate > float(max_opponent_timeout_rate):
+            msg = (
+                f"[eval][warning] opponent={opp} timeout_rate={timeout_rate*100.0:.1f}%, "
+                "win_rate is unreliable and excluded from gating."
+            )
+            reliability_warnings.append(msg)
+            print(msg)
+        if not bool(r.get("reliable", True)):
+            overall_reliable = False
+            reasons_local = r.get("unreliable_reasons") or []
+            if reasons_local:
+                for reason in reasons_local:
+                    overall_unreliable_reasons.append(f"{opp}: {reason}")
+            else:
+                overall_unreliable_reasons.append(f"{opp}: unreliable matchup")
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    json_path = logs_dir / f"pipeline_eval_{ts}.json"
-    md_path = logs_dir / f"pipeline_eval_{ts}.md"
+    json_path = logs_dir / f"pipeline_eval_{label}_{ts}.json"
+    md_path = logs_dir / f"pipeline_eval_{label}_{ts}.md"
 
     payload = {
         "created_at": _utc_now_iso(),
         "label": label,
+        "evaluator_backend": eval_mod.EVALUATOR_BACKEND,
+        "candidate_checkpoint": str(checkpoint_path.resolve()),
         "checkpoint": str(checkpoint_path.resolve()),
         "previous_best_checkpoint": (
             str(previous_best_checkpoint.resolve())
@@ -279,18 +321,24 @@ def _evaluate_checkpoint_matrix(
             else None
         ),
         "opponents": list(opponents),
+        "reliable": bool(overall_reliable),
+        "unreliable_reasons": overall_unreliable_reasons,
         "candidate_results": candidate_results,
         "previous_best_results": previous_best_results,
         "gating": {
             "passed": bool(passed),
             "reasons": reasons,
             "warning": warning,
+            "reliability_warnings": reliability_warnings,
         },
         "config": {
             "games": int(games),
             "simulations": int(simulations),
             "device": device,
             "seed": int(seed),
+            "max_opponent_timeout_rate": float(max_opponent_timeout_rate),
+            "max_candidate_timeout_rate": float(max_candidate_timeout_rate),
+            "timeout_result_policy": str(timeout_result_policy),
         },
     }
     _save_json(json_path, payload)
@@ -300,6 +348,7 @@ def _evaluate_checkpoint_matrix(
         "# Pipeline Evaluation",
         "",
         f"- Label: `{label}`",
+        f"- Evaluator backend: `{eval_mod.EVALUATOR_BACKEND}`",
         f"- Checkpoint: `{checkpoint_path}`",
         f"- Previous best: `{payload['previous_best_checkpoint']}`",
         "",
@@ -308,11 +357,20 @@ def _evaluate_checkpoint_matrix(
         "",
         "## Gating",
         f"- Passed: `{passed}`",
+        f"- Reliable: `{overall_reliable}`",
     ]
     for reason in reasons:
         md_lines.append(f"- {reason}")
     if warning:
         md_lines.extend(["", "## Warning", f"> {warning}"])
+    if reliability_warnings:
+        md_lines.extend(["", "## Reliability Warnings"])
+        for w in reliability_warnings:
+            md_lines.append(f"- {w}")
+    if overall_unreliable_reasons:
+        md_lines.extend(["", "## Unreliable Reasons"])
+        for reason in overall_unreliable_reasons:
+            md_lines.append(f"- {reason}")
     md_path.write_text("\n".join(md_lines), encoding="utf-8")
 
     payload["log_paths"] = {
@@ -380,52 +438,57 @@ def _build_context_metadata(
 
 def _recommend_next_params(args: argparse.Namespace, latest_eval: Optional[Dict[str, Any]], bottleneck: str) -> List[str]:
     recs: List[str] = []
-    if "稳定性" in bottleneck:
+    if "unreliable" in bottleneck or "timeout" in bottleneck or "illegal" in bottleneck:
         recs.append(
-            f"`--simulations {max(32, int(args.simulations) - 20)}` 降一点，先消除 timeout/illegal。"
+            f"`--simulations {max(32, int(args.simulations) - 20)}` reduce search load first to remove timeout/illegal."
         )
         recs.append(
-            f"`--self-play-games {int(args.self_play_games)}` 保持，先看稳定性是否恢复。"
-        )
-        return recs
-
-    if "random 高但 negamax 低" in bottleneck or "negamax" in bottleneck:
-        recs.append(
-            f"`--simulations {int(args.simulations) + 20}` 提升根访问分布质量。"
-        )
-        recs.append(
-            f"`--self-play-games {int(args.self_play_games) + max(2, int(args.self_play_games)//5)}` 增加自博弈覆盖。"
-        )
-        recs.append(
-            f"`--teacher-depth {int(args.teacher_depth) + 1}` 做更强 bootstrap。"
+            f"`--self-play-games {int(args.self_play_games)}` keep coverage stable while fixing reliability."
         )
         return recs
 
-    if "previous best" in bottleneck or "退化" in bottleneck:
-        recs.append(f"`--train-lr {max(1e-5, float(args.train_lr) * 0.7):.6f}` 稍降学习率。")
-        recs.append(f"`--train-steps {int(args.train_steps) + max(20, int(args.train_steps)//5)}` 稍增训练步数。")
+    if "random high but negamax low" in bottleneck or "negamax" in bottleneck:
+        recs.append(
+            f"`--simulations {int(args.simulations) + 20}` raise search quality for stronger targets."
+        )
+        recs.append(
+            f"`--self-play-games {int(args.self_play_games) + max(2, int(args.self_play_games)//5)}` increase self-play coverage."
+        )
+        recs.append(
+            f"`--teacher-depth {int(args.teacher_depth) + 1}` strengthen teacher bootstrap."
+        )
         return recs
 
-    recs.append(f"`--iterations {int(args.iterations) + 5}` 继续扩大迭代轮数。")
-    recs.append(f"`--eval-games {max(100, int(args.eval_games))}` 保持评估稳定性。")
-    recs.append(f"`--simulations {int(args.simulations)}` 可先不变，观察趋势。")
+    if "previous best" in bottleneck or "regression" in bottleneck:
+        recs.append(f"`--train-lr {max(1e-5, float(args.train_lr) * 0.7):.6f}` lower lr for stability.")
+        recs.append(f"`--train-steps {int(args.train_steps) + max(20, int(args.train_steps)//5)}` add train steps.")
+        return recs
+
+    recs.append(f"`--iterations {int(args.iterations) + 5}` continue with more iterations.")
+    recs.append(f"`--eval-games {max(100, int(args.eval_games))}` keep evaluation stability.")
+    recs.append(f"`--simulations {int(args.simulations)}` keep simulations unchanged and observe trend.")
     return recs
 
 
 def _infer_bottleneck(latest_eval: Optional[Dict[str, Any]]) -> str:
     if not latest_eval:
-        return "暂无评估数据，当前瓶颈未知。"
+        return "no evaluation data yet."
 
     cand = latest_eval.get("candidate_results", {})
     g = latest_eval.get("gating", {})
     reasons = list(g.get("reasons") or [])
+    reliable = bool(latest_eval.get("reliable", True))
+    unreliable_reasons = list(latest_eval.get("unreliable_reasons") or [])
+
+    if (not reliable) or unreliable_reasons:
+        return "pipeline final eval unreliable because opponent timeout rate is too high"
 
     illegal_or_timeout = any(
         ("illegal" in r.lower()) or ("timeout" in r.lower()) or ("runtime errors" in r.lower())
         for r in reasons
     )
     if illegal_or_timeout:
-        return "稳定性瓶颈：存在非法动作、超时或运行时异常。"
+        return "stability bottleneck: illegal action / timeout / runtime error exists."
 
     wr_random = float(cand.get("random", {}).get("win_rate", 0.0))
     wr_nega = float(cand.get("negamax", {}).get("win_rate", 0.0))
@@ -433,15 +496,14 @@ def _infer_bottleneck(latest_eval: Optional[Dict[str, Any]]) -> str:
     wr_prev = float(cand.get("previous_best", {}).get("win_rate", 1.0))
 
     if wr_random >= 0.8 and wr_nega <= 0.55:
-        return "强度瓶颈：random 高但 negamax 低，疑似弱对手过拟合。"
+        return "strength bottleneck: random high but negamax low."
     if wr_prev < 0.55:
-        return "退化瓶颈：对 previous best 优势不足。"
+        return "regression bottleneck: weak edge vs previous best."
     if wr_nega < 0.5:
-        return "搜索质量瓶颈：对 negamax 胜率偏低。"
+        return "search-quality bottleneck: low win rate vs negamax."
     if wr_mcts < 0.5:
-        return "对抗强度瓶颈：对 mcts_lite 胜率偏低。"
-    return "暂无明显瓶颈，建议扩大量级继续训练。"
-
+        return "strength bottleneck: low win rate vs mcts_lite."
+    return "no obvious bottleneck."
 
 def _write_training_summary(
     summary_path: Path,
@@ -449,54 +511,104 @@ def _write_training_summary(
     history: List[Dict[str, Any]],
     args: argparse.Namespace,
 ) -> None:
-    recent = history[-5:]
-    latest_eval = recent[-1] if recent else None
-    bottleneck = _infer_bottleneck(latest_eval)
-    recs = _recommend_next_params(args, latest_eval, bottleneck)
+    def _find_last_eval(label: str) -> Optional[Dict[str, Any]]:
+        for rec in reversed(history):
+            if str(rec.get("label", "")) == label:
+                return rec
+        return None
 
-    best_ckpt = state.get("best_checkpoint", "")
-    latest_ckpt = state.get("latest_checkpoint", "")
+    def _fmt_match(rec: Optional[Dict[str, Any]], opp: str) -> str:
+        if not rec:
+            return "n/a"
+        cand = rec.get("candidate_results", {}) or {}
+        if opp not in cand:
+            return "n/a"
+        r = cand[opp]
+        raw_wr = float(r.get("win_rate", 0.0)) * 100.0
+        base = f"{int(r.get('wins', 0))}/{int(r.get('losses', 0))}/{int(r.get('draws', 0))} ({raw_wr:.1f}%)"
+        if not bool(r.get("reliable", True)):
+            rel_wr = float(r.get("reliable_win_rate", r.get("win_rate", 0.0))) * 100.0
+            rel_games = int(r.get("reliable_games", 0))
+            return f"{base} [UNRELIABLE, reliable={rel_wr:.1f}%/{rel_games}]"
+        return base
+
+    recent = history[-5:]
+    final_latest_eval = _find_last_eval("final_latest_eval")
+    final_best_eval = _find_last_eval("final_best_eval")
+    bottleneck_source = final_latest_eval or (recent[-1] if recent else None)
+    bottleneck = _infer_bottleneck(bottleneck_source)
+    recs = _recommend_next_params(args, bottleneck_source, bottleneck)
+
+    best_ckpt = str(state.get("best_checkpoint", "") or "")
+    latest_ckpt = str(state.get("latest_checkpoint", "") or "")
+    best_iteration = int(state.get("best_iteration", 0) or 0)
+    latest_iteration = int(state.get("last_iteration", 0) or 0)
+
+    latest_passed = bool(
+        final_latest_eval
+        and bool(final_latest_eval.get("gating", {}).get("passed", False))
+        and bool(final_latest_eval.get("reliable", False))
+    )
+    best_reliable = bool(final_best_eval and bool(final_best_eval.get("reliable", False)))
+    latest_reliable = bool(final_latest_eval and bool(final_latest_eval.get("reliable", False)))
+
+    recommended_label = "latest.pt" if latest_passed else "best.pt"
+    recommended_path = latest_ckpt if latest_passed else best_ckpt
 
     lines = [
         "# Training Summary",
         "",
         f"- Updated at: `{_utc_now_iso()}`",
-        f"- Current best checkpoint: `{best_ckpt}`",
-        f"- Current latest checkpoint: `{latest_ckpt}`",
+        f"- Best checkpoint: `{best_ckpt}` (iteration `{best_iteration}`)",
+        f"- Latest checkpoint: `{latest_ckpt}` (iteration `{latest_iteration}`)",
+        f"- Latest passed gating: `{latest_passed}`",
+        f"- Recommended checkpoint: `{recommended_label}`",
+        f"- Recommended path: `{recommended_path}`",
         "",
-        "## Recent 5 Evaluations",
+        "## Final Checkpoint Comparison",
+        "| Metric | best.pt | latest.pt |",
+        "|---|---|---|",
+        f"| Label | final_best_eval | final_latest_eval |",
+        f"| Iteration | {best_iteration} | {latest_iteration} |",
+        f"| Reliable | {bool(final_best_eval.get('reliable', False)) if final_best_eval else 'n/a'} | {bool(final_latest_eval.get('reliable', False)) if final_latest_eval else 'n/a'} |",
+        f"| Gating passed | {bool(final_best_eval.get('gating', {}).get('passed', False)) if final_best_eval else 'n/a'} | {bool(final_latest_eval.get('gating', {}).get('passed', False)) if final_latest_eval else 'n/a'} |",
+        f"| vs random | {_fmt_match(final_best_eval, 'random')} | {_fmt_match(final_latest_eval, 'random')} |",
+        f"| vs negamax | {_fmt_match(final_best_eval, 'negamax')} | {_fmt_match(final_latest_eval, 'negamax')} |",
+        f"| vs mcts_lite | {_fmt_match(final_best_eval, 'mcts_lite')} | {_fmt_match(final_latest_eval, 'mcts_lite')} |",
+        "",
     ]
 
+    if (final_best_eval and not best_reliable) or (final_latest_eval and not latest_reliable):
+        lines.append("- Final comparison contains unreliable eval(s); those rows are not valid for strength ranking.")
+        lines.append("")
+
+    if latest_ckpt and (not latest_passed):
+        lines.append(
+            f"- latest checkpoint did not pass gating; current best remains iteration {best_iteration}."
+        )
+        lines.append("")
+
+    lines.append("## Recent 5 Evaluations")
     if not recent:
         lines.append("- No evaluation records yet.")
     else:
         for idx, rec in enumerate(recent, start=1):
-            cand = rec.get("candidate_results", {})
-            def _fmt(op: str) -> str:
-                if op not in cand:
-                    return "n/a"
-                r = cand[op]
-                return f"{r['wins']}/{r['losses']}/{r['draws']} ({float(r['win_rate'])*100:.1f}%)"
-
             lines.extend(
                 [
                     f"### Eval #{idx}",
                     f"- Time: `{rec.get('created_at', '')}`",
                     f"- Mode: `{rec.get('label', '')}`",
                     f"- Checkpoint: `{rec.get('checkpoint', '')}`",
-                    f"- vs random: `{_fmt('random')}`",
-                    f"- vs negamax: `{_fmt('negamax')}`",
-                    f"- vs mcts_lite: `{_fmt('mcts_lite')}`",
-                    f"- vs previous best: `{_fmt('previous_best')}`",
+                    f"- Reliable: `{rec.get('reliable', True)}`",
                     f"- Gating passed: `{rec.get('gating', {}).get('passed', False)}`",
                 ]
             )
-            warning = rec.get("gating", {}).get("warning")
-            if warning:
-                lines.append(f"- Warning: {warning}")
             reasons = rec.get("gating", {}).get("reasons") or []
             if reasons:
                 lines.append(f"- Reasons: {'; '.join(str(x) for x in reasons)}")
+            unr = rec.get("unreliable_reasons") or []
+            if unr:
+                lines.append(f"- Unreliable reasons: {'; '.join(str(x) for x in unr)}")
             lines.append("")
 
     lines.extend(
@@ -599,6 +711,9 @@ def _run_bootstrap(
                 simulations=int(args.simulations),
                 device=str(args.device),
                 seed=int(args.seed),
+                max_opponent_timeout_rate=float(args.max_opponent_timeout_rate),
+                max_candidate_timeout_rate=float(args.max_candidate_timeout_rate),
+                timeout_result_policy=str(args.timeout_result_policy),
                 logs_dir=paths.logs,
                 label="bootstrap_pretrained",
             )
@@ -678,6 +793,12 @@ def _run_selfplay(
         str(int(args.eval_interval)),
         "--eval-games",
         str(int(args.eval_games)),
+        "--max-opponent-timeout-rate",
+        str(float(args.max_opponent_timeout_rate)),
+        "--max-candidate-timeout-rate",
+        str(float(args.max_candidate_timeout_rate)),
+        "--timeout-result-policy",
+        str(args.timeout_result_policy),
         "--seed",
         str(int(args.seed)),
     ]
@@ -695,45 +816,82 @@ def _run_selfplay(
     if copied > 0:
         print(f"[pipeline] selfplay: copied {copied} self-play npz -> {paths.data_selfplay}")
 
-    if best_ckpt.exists():
-        candidate_ckpt = best_ckpt
-    elif latest_ckpt.exists():
-        candidate_ckpt = latest_ckpt
-    else:
+    if (not latest_ckpt.exists()) and (not best_ckpt.exists()):
         raise RuntimeError("Training finished but neither latest.pt nor best.pt exists.")
 
-    eval_payload = None
     opponents = [x.strip() for x in str(args.opponents).split(",") if x.strip()]
-    try:
-        eval_payload = _evaluate_checkpoint_matrix(
-            checkpoint_path=candidate_ckpt,
-            previous_best_checkpoint=prev_best_snapshot,
-            opponents=opponents,
-            games=int(args.eval_games),
-            simulations=int(args.simulations),
-            device=str(args.device),
-            seed=int(args.seed) + 77,
-            logs_dir=paths.logs,
-            label="selfplay_candidate",
-        )
-        history = _append_eval_history(paths.eval_history, eval_payload)
-        print(
-            f"[pipeline] selfplay eval: passed={eval_payload['gating']['passed']} "
-            f"reasons={eval_payload['gating']['reasons']}"
-        )
-    except Exception as exc:
-        print(f"[pipeline] WARN: selfplay eval failed, checkpoint kept. err={exc}")
-        traceback.print_exc()
-        history = _load_json(paths.eval_history, [])
+    history = _load_json(paths.eval_history, [])
+    if not isinstance(history, list):
+        history = []
 
-    if eval_payload is not None:
-        can_promote = bool(eval_payload["gating"]["passed"])
-        if can_promote and latest_ckpt.exists() and candidate_ckpt == latest_ckpt:
-            shutil.copy2(latest_ckpt, best_ckpt)
-            candidate_ckpt = best_ckpt
-            print("[pipeline] selfplay: promoted latest -> best by pipeline gating.")
-        elif not can_promote:
-            print("[pipeline] selfplay: candidate failed gating, best checkpoint unchanged.")
+    eval_payload_latest: Optional[Dict[str, Any]] = None
+    eval_payload_best: Optional[Dict[str, Any]] = None
+
+    if latest_ckpt.exists():
+        try:
+            eval_payload_latest = _evaluate_checkpoint_matrix(
+                checkpoint_path=latest_ckpt,
+                previous_best_checkpoint=prev_best_snapshot,
+                opponents=opponents,
+                games=int(args.eval_games),
+                simulations=int(args.simulations),
+                device=str(args.device),
+                seed=int(args.seed) + 77,
+                max_opponent_timeout_rate=float(args.max_opponent_timeout_rate),
+                max_candidate_timeout_rate=float(args.max_candidate_timeout_rate),
+                timeout_result_policy=str(args.timeout_result_policy),
+                logs_dir=paths.logs,
+                label="final_latest_eval",
+            )
+            history = _append_eval_history(paths.eval_history, eval_payload_latest)
+            print(
+                f"[pipeline] final_latest_eval: passed={eval_payload_latest['gating']['passed']} "
+                f"reliable={eval_payload_latest.get('reliable', True)} "
+                f"reasons={eval_payload_latest['gating']['reasons']}"
+            )
+        except Exception as exc:
+            print(f"[pipeline] WARN: final_latest_eval failed, checkpoint kept. err={exc}")
+            traceback.print_exc()
+            history = _load_json(paths.eval_history, [])
+            if not isinstance(history, list):
+                history = []
+
+    if best_ckpt.exists():
+        try:
+            eval_payload_best = _evaluate_checkpoint_matrix(
+                checkpoint_path=best_ckpt,
+                previous_best_checkpoint=prev_best_snapshot,
+                opponents=opponents,
+                games=int(args.eval_games),
+                simulations=int(args.simulations),
+                device=str(args.device),
+                seed=int(args.seed) + 78,
+                max_opponent_timeout_rate=float(args.max_opponent_timeout_rate),
+                max_candidate_timeout_rate=float(args.max_candidate_timeout_rate),
+                timeout_result_policy=str(args.timeout_result_policy),
+                logs_dir=paths.logs,
+                label="final_best_eval",
+            )
+            history = _append_eval_history(paths.eval_history, eval_payload_best)
+            print(
+                f"[pipeline] final_best_eval: passed={eval_payload_best['gating']['passed']} "
+                f"reliable={eval_payload_best.get('reliable', True)} "
+                f"reasons={eval_payload_best['gating']['reasons']}"
+            )
+        except Exception as exc:
+            print(f"[pipeline] WARN: final_best_eval failed, checkpoint kept. err={exc}")
+            traceback.print_exc()
+            history = _load_json(paths.eval_history, [])
+            if not isinstance(history, list):
+                history = []
+
+    latest_passed_gating = bool(
+        eval_payload_latest is not None
+        and bool(eval_payload_latest.get("gating", {}).get("passed", False))
+        and bool(eval_payload_latest.get("reliable", False))
+    )
+    if latest_ckpt.exists() and (not latest_passed_gating):
+        print("[pipeline] latest checkpoint did not pass gating; best checkpoint remains unchanged.")
 
     if args.build_submission:
         try:
@@ -752,26 +910,68 @@ def _run_selfplay(
 
     train_state = _load_json(ckpt_dir / "train_state.json", {})
     last_iteration = None
+    best_iteration = None
     if isinstance(train_state, dict) and "last_iteration" in train_state:
         try:
             last_iteration = int(train_state.get("last_iteration"))
         except Exception:
             last_iteration = None
+    if isinstance(train_state, dict) and "best_iteration" in train_state:
+        try:
+            best_iteration = int(train_state.get("best_iteration"))
+        except Exception:
+            best_iteration = None
+
+    final_eval_bundle = {
+        "final_latest_eval": eval_payload_latest,
+        "final_best_eval": eval_payload_best,
+    }
 
     extra_meta = _build_context_metadata(
         args,
         git_info,
         teacher_path,
-        eval_payload,
+        final_eval_bundle,
         iteration=last_iteration,
     )
     _update_checkpoint_metadata(latest_ckpt, extra_meta)
     _update_checkpoint_metadata(best_ckpt, extra_meta)
 
+    recommended_ckpt = None
+    if latest_ckpt.exists() and latest_passed_gating:
+        recommended_ckpt = latest_ckpt
+    elif best_ckpt.exists():
+        recommended_ckpt = best_ckpt
+    elif latest_ckpt.exists():
+        recommended_ckpt = latest_ckpt
+
+    if recommended_ckpt is not None:
+        print(f"[pipeline] recommendation: use {recommended_ckpt}")
+
     state.update(
         {
+            "last_iteration": int(last_iteration) if last_iteration is not None else 0,
+            "best_iteration": int(best_iteration) if best_iteration is not None else 0,
             "latest_checkpoint": str(latest_ckpt.resolve()) if latest_ckpt.exists() else "",
             "best_checkpoint": str(best_ckpt.resolve()) if best_ckpt.exists() else "",
+            "latest_eval_passed_gating": bool(latest_passed_gating),
+            "latest_eval_reliable": bool(
+                eval_payload_latest is not None and bool(eval_payload_latest.get("reliable", False))
+            ),
+            "best_eval_reliable": bool(
+                eval_payload_best is not None and bool(eval_payload_best.get("reliable", False))
+            ),
+            "recommended_checkpoint": str(recommended_ckpt.resolve()) if recommended_ckpt else "",
+            "final_eval_latest_log": (
+                str(eval_payload_latest.get("log_paths", {}).get("json", ""))
+                if eval_payload_latest is not None
+                else ""
+            ),
+            "final_eval_best_log": (
+                str(eval_payload_best.get("log_paths", {}).get("json", ""))
+                if eval_payload_best is not None
+                else ""
+            ),
             "train_checkpoint_dir": str(ckpt_dir.resolve()),
             "updated_at": _utc_now_iso(),
             "last_run_mode": "selfplay",
@@ -824,6 +1024,14 @@ def _main() -> None:
     parser.add_argument("--buffer-size", type=int, default=200000)
     parser.add_argument("--eval-interval", type=int, default=1)
     parser.add_argument("--eval-games", type=int, default=200)
+    parser.add_argument("--max-opponent-timeout-rate", type=float, default=0.05)
+    parser.add_argument("--max-candidate-timeout-rate", type=float, default=0.01)
+    parser.add_argument(
+        "--timeout-result-policy",
+        type=str,
+        choices=("loss", "exclude", "fail_eval"),
+        default="fail_eval",
+    )
     parser.add_argument("--opponents", type=str, default="random,negamax,mcts_lite")
 
     # Paths / outputs.

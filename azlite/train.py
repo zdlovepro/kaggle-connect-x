@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import random
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -18,6 +19,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from azlite import eval_core
 from azlite.board import find_immediate_block, find_immediate_win, legal_moves, obs_board_to_numpy
 from azlite.model import ConnectXNet, NeuralEvaluator, save_checkpoint
 from azlite.puct_mcts import run_mcts
@@ -67,6 +69,15 @@ class EvalResult:
     win_rate: float
     first_player_win_rate: float
     second_player_win_rate: float
+    candidate_timeouts: int = 0
+    opponent_timeouts: int = 0
+    candidate_invalid_actions: int = 0
+    opponent_invalid_actions: int = 0
+    candidate_timeout_rate: float = 0.0
+    opponent_timeout_rate: float = 0.0
+    reliable: bool = True
+    unreliable_reasons: Optional[list[str]] = None
+    reliability_warning: Optional[str] = None
 
 
 def _mcts_model_agent(model: ConnectXNet, device: str, simulations: int):
@@ -109,70 +120,82 @@ def _mcts_model_agent(model: ConnectXNet, device: str, simulations: int):
     return _agent
 
 
-def _evaluate_vs(agent_a, agent_b, games: int = 16) -> EvalResult:
-    try:
-        from kaggle_environments import make
-    except Exception as exc:  # pragma: no cover
-        raise RuntimeError(
-            "kaggle_environments is required for training evaluation. "
-            "Install with `python -m pip install kaggle-environments`."
-        ) from exc
+def _evaluate_vs(
+    agent_a,
+    agent_b,
+    games: int = 16,
+    seed: Optional[int] = None,
+    simulations: int = 100,
+    device: str = "cpu",
+    act_timeout_sec: float = eval_core.KAGGLE_ACT_TIMEOUT_SEC,
+    max_opponent_timeout_rate: float = 0.05,
+    max_candidate_timeout_rate: float = 0.01,
+    timeout_result_policy: str = "fail_eval",
+) -> EvalResult:
+    candidate = eval_core.as_unified_agent(agent_a, default_name="train_candidate")
+    if isinstance(agent_b, str):
+        opponent = eval_core.create_agent(
+            agent_b,
+            simulations=int(simulations),
+            device=str(device),
+            seed=seed,
+        )
+    else:
+        opponent = eval_core.as_unified_agent(agent_b, default_name="train_opponent")
 
-    wins = losses = draws = 0
-    fp_games = sp_games = 0
-    fp_wins = sp_wins = 0
+    match = eval_core.play_match(
+        candidate,
+        opponent,
+        num_games=int(games),
+        swap_sides=True,
+        seed=seed,
+        act_timeout_sec=float(act_timeout_sec),
+        max_opponent_timeout_rate=float(max_opponent_timeout_rate),
+        max_candidate_timeout_rate=float(max_candidate_timeout_rate),
+        timeout_result_policy=str(timeout_result_policy),
+    )
 
-    half = games // 2
-    if games % 2 != 0:
-        half += 1
-
-    for i in range(games):
-        if i < half:
-            env = make("connectx", debug=False)
-            env.run([agent_a, agent_b])
-            r0 = env.steps[-1][0].reward or 0
-            r1 = env.steps[-1][1].reward or 0
-            fp_games += 1
-            if r0 == 1:
-                wins += 1
-                fp_wins += 1
-            elif r1 == 1:
-                losses += 1
-            else:
-                draws += 1
-        else:
-            env = make("connectx", debug=False)
-            env.run([agent_b, agent_a])
-            r0 = env.steps[-1][0].reward or 0
-            r1 = env.steps[-1][1].reward or 0
-            sp_games += 1
-            if r1 == 1:
-                wins += 1
-                sp_wins += 1
-            elif r0 == 1:
-                losses += 1
-            else:
-                draws += 1
-
+    reliability = match.get("reliability") or {}
+    invalid = match.get("invalid_actions") or {}
     return EvalResult(
-        wins=wins,
-        losses=losses,
-        draws=draws,
-        win_rate=float(wins / max(1, games)),
-        first_player_win_rate=float(fp_wins / max(1, fp_games)),
-        second_player_win_rate=float(sp_wins / max(1, sp_games)),
+        wins=int(match["wins"]),
+        losses=int(match["losses"]),
+        draws=int(match["draws"]),
+        win_rate=float(match["win_rate"]),
+        first_player_win_rate=float(match.get("first_player_win_rate", 0.0)),
+        second_player_win_rate=float(match.get("second_player_win_rate", 0.0)),
+        candidate_timeouts=int(match.get("candidate_timeouts", match["timeouts"]["agent_a"])),
+        opponent_timeouts=int(match.get("opponent_timeouts", match["timeouts"]["agent_b"])),
+        candidate_invalid_actions=int(invalid.get("candidate", match["illegal_actions"]["agent_a"])),
+        opponent_invalid_actions=int(invalid.get("opponent", match["illegal_actions"]["agent_b"])),
+        candidate_timeout_rate=float(match.get("candidate_timeout_rate", 0.0)),
+        opponent_timeout_rate=float(match.get("opponent_timeout_rate", 0.0)),
+        reliable=bool(match.get("reliable", reliability.get("reliable", True))),
+        unreliable_reasons=list(match.get("unreliable_reasons") or []),
+        reliability_warning=reliability.get("warning"),
     )
 
 
 def _format_eval(name: str, result: Optional[EvalResult]) -> str:
     if result is None:
         return f"{name}: skipped"
-    return (
+    msg = (
         f"{name}: {result.wins}W/{result.losses}L/{result.draws}D "
         f"WR={result.win_rate*100:.1f}% "
         f"FP={result.first_player_win_rate*100:.1f}% "
         f"SP={result.second_player_win_rate*100:.1f}%"
     )
+    msg += (
+        f" TO(cand/opp)={result.candidate_timeouts}/{result.opponent_timeouts} "
+        f"IL(cand/opp)={result.candidate_invalid_actions}/{result.opponent_invalid_actions} "
+        f"TO_RATE(cand/opp)={result.candidate_timeout_rate*100:.1f}%/{result.opponent_timeout_rate*100:.1f}%"
+    )
+    if (not result.reliable) and (result.unreliable_reasons or result.reliability_warning):
+        reasons = "; ".join(result.unreliable_reasons or [])
+        if not reasons and result.reliability_warning:
+            reasons = str(result.reliability_warning)
+        msg += f" [UNRELIABLE: {reasons}]"
+    return msg
 
 
 def _soft_target_ce_loss(logits: torch.Tensor, target_probs: torch.Tensor) -> torch.Tensor:
@@ -333,6 +356,10 @@ def _should_promote_to_best(
     # Guardrails: not random-only; require negamax and previous-best consistency.
     if eval_prev_best is not None and eval_prev_best.win_rate < 0.5:
         return False, "failed vs previous best (<50%)", score
+    if not eval_negamax.reliable:
+        return False, "negamax matchup unreliable due opponent timeouts", score
+    if eval_prev_best is not None and (not eval_prev_best.reliable):
+        return False, "previous-best matchup unreliable due opponent timeouts", score
     if best_negamax >= 0.0 and eval_negamax.win_rate + 1e-9 < (best_negamax - 0.03):
         return False, "negamax regressed too much", score
     if score <= best_score + 1e-9:
@@ -386,6 +413,15 @@ def _main() -> None:
     )
     parser.add_argument("--eval-interval", type=int, default=1)
     parser.add_argument("--eval-games", type=int, default=16)
+    parser.add_argument("--eval-act-timeout-sec", type=float, default=eval_core.KAGGLE_ACT_TIMEOUT_SEC)
+    parser.add_argument("--max-opponent-timeout-rate", type=float, default=0.05)
+    parser.add_argument("--max-candidate-timeout-rate", type=float, default=0.01)
+    parser.add_argument(
+        "--timeout-result-policy",
+        type=str,
+        choices=("loss", "exclude", "fail_eval"),
+        default="fail_eval",
+    )
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
@@ -405,6 +441,7 @@ def _main() -> None:
         "best_composite": float(state.get("best_composite", -1.0)),
         "best_negamax_win_rate": float(state.get("best_negamax_win_rate", -1.0)),
     }
+    best_iteration = int(state.get("best_iteration", 0) or 0)
 
     # 1) Load model + optimizer
     if args.resume and latest_ckpt_path.exists():
@@ -446,6 +483,7 @@ def _main() -> None:
         f"self_play_games={args.self_play_games}, sims={args.simulations}, "
         f"batch={args.batch_size}, train_steps={args.train_steps}"
     )
+    print(f"[train] evaluator_backend={eval_core.EVALUATOR_BACKEND}")
 
     for iteration in range(start_iteration, end_iteration + 1):
         print("\n" + "=" * 72)
@@ -513,13 +551,46 @@ def _main() -> None:
         if int(args.eval_interval) > 0 and (iteration % int(args.eval_interval) == 0):
             model.eval()
             current_agent = _mcts_model_agent(model, device=device, simulations=int(args.simulations))
-            eval_random = _evaluate_vs(current_agent, "random", games=int(args.eval_games))
-            eval_negamax = _evaluate_vs(current_agent, "negamax", games=int(args.eval_games))
+            eval_random = _evaluate_vs(
+                current_agent,
+                "random",
+                games=int(args.eval_games),
+                seed=int(args.seed) + iteration * 100 + 1,
+                simulations=int(args.simulations),
+                device=device,
+                act_timeout_sec=float(args.eval_act_timeout_sec),
+                max_opponent_timeout_rate=float(args.max_opponent_timeout_rate),
+                max_candidate_timeout_rate=float(args.max_candidate_timeout_rate),
+                timeout_result_policy=str(args.timeout_result_policy),
+            )
+            eval_negamax = _evaluate_vs(
+                current_agent,
+                "negamax",
+                games=int(args.eval_games),
+                seed=int(args.seed) + iteration * 100 + 2,
+                simulations=int(args.simulations),
+                device=device,
+                act_timeout_sec=float(args.eval_act_timeout_sec),
+                max_opponent_timeout_rate=float(args.max_opponent_timeout_rate),
+                max_candidate_timeout_rate=float(args.max_candidate_timeout_rate),
+                timeout_result_policy=str(args.timeout_result_policy),
+            )
 
             if best_ckpt_path.exists():
                 best_model, _, _ = _load_model_and_optimizer(best_ckpt_path, device=device, lr=float(args.lr))
                 best_agent = _mcts_model_agent(best_model, device=device, simulations=int(args.simulations))
-                eval_prev_best = _evaluate_vs(current_agent, best_agent, games=max(8, int(args.eval_games)))
+                eval_prev_best = _evaluate_vs(
+                    current_agent,
+                    best_agent,
+                    games=max(8, int(args.eval_games)),
+                    seed=int(args.seed) + iteration * 100 + 3,
+                    simulations=int(args.simulations),
+                    device=device,
+                    act_timeout_sec=float(args.eval_act_timeout_sec),
+                    max_opponent_timeout_rate=float(args.max_opponent_timeout_rate),
+                    max_candidate_timeout_rate=float(args.max_candidate_timeout_rate),
+                    timeout_result_policy=str(args.timeout_result_policy),
+                )
 
             # 7) gating for best checkpoint
             gate_passed, gate_reason, composite = _should_promote_to_best(
@@ -531,6 +602,7 @@ def _main() -> None:
             if gate_passed:
                 best_meta = dict(latest_meta)
                 best_meta["eval_results"] = {
+                    "evaluator_backend": eval_core.EVALUATOR_BACKEND,
                     "random": eval_random.__dict__,
                     "negamax": eval_negamax.__dict__,
                     "previous_best": eval_prev_best.__dict__ if eval_prev_best else None,
@@ -540,6 +612,7 @@ def _main() -> None:
                 save_checkpoint(model, optimizer, best_ckpt_path, metadata=best_meta)
                 best_metrics["best_composite"] = float(composite)
                 best_metrics["best_negamax_win_rate"] = float(eval_negamax.win_rate)
+                best_iteration = int(iteration)
 
         # 5/6/7 logs
         print(
@@ -566,11 +639,19 @@ def _main() -> None:
         if gate_passed:
             print(f"[train] best checkpoint:   {best_ckpt_path.resolve()}")
 
+        latest_composite = None
+        if eval_random is not None and (not math.isnan(float(composite))):
+            latest_composite = float(composite)
+        latest_negamax_win_rate = float(eval_negamax.win_rate) if eval_negamax is not None else None
+
         state.update(
             {
                 "last_iteration": int(iteration),
+                "best_iteration": int(best_iteration),
                 "best_composite": float(best_metrics["best_composite"]),
                 "best_negamax_win_rate": float(best_metrics["best_negamax_win_rate"]),
+                "latest_composite": latest_composite,
+                "latest_negamax_win_rate": latest_negamax_win_rate,
                 "latest_checkpoint": str(latest_ckpt_path.resolve()),
                 "best_checkpoint": str(best_ckpt_path.resolve()) if best_ckpt_path.exists() else "",
                 "buffer_size": int(len(replay)),

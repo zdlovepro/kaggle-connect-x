@@ -1,502 +1,29 @@
 """Robust evaluation matrix for ConnectX AlphaZero-lite.
 
-Goal:
-  avoid misleading conclusions from random-only win rates.
+This module intentionally keeps CLI/reporting/gating logic, while delegating
+actual agent construction and match execution to `azlite.eval_core`.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import random
-import time
-from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from types import SimpleNamespace
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-import numpy as np
-
-from azlite.board import (
-    apply_move,
-    find_immediate_block,
-    find_immediate_win,
-    get_winner,
-    is_draw,
-    legal_moves,
-    obs_board_to_numpy,
+from azlite.eval_core import (
+    EVALUATOR_BACKEND,
+    KAGGLE_ACT_TIMEOUT_SEC,
+    KAGGLE_P95_TIMEOUT_SEC,
+    UnifiedAgent,
+    create_agent,
+    play_match,
 )
-from azlite.puct_mcts import HeuristicEvaluator, run_mcts
-
-try:
-    import submission as _submission
-except Exception:
-    _submission = None
-
-try:
-    from agents.minimax_bitboard import MinimaxBitboardAgent
-except Exception:
-    MinimaxBitboardAgent = None
-
-try:
-    from agents.mcts_agent import MCTSAgent
-except Exception:
-    MCTSAgent = None
-
-
-ROWS = 6
-COLS = 7
-INAROW = 4
-MAX_MOVES = ROWS * COLS
-KAGGLE_ACT_TIMEOUT_SEC = 2.0
-KAGGLE_P95_TIMEOUT_SEC = 2.0
-
-
-@dataclass
-class UnifiedAgent:
-    name: str
-    fn: Callable[[Any, Any], int]
-    description: str = ""
 
 
 def _ts_now() -> str:
     return datetime.now().strftime("%Y%m%d_%H%M%S")
-
-
-def _default_cfg() -> SimpleNamespace:
-    return SimpleNamespace(rows=ROWS, columns=COLS, inarow=INAROW)
-
-
-def _load_model_symbols():
-    """Lazy-load model module so baseline eval works even without torch installed."""
-    try:
-        from azlite.model import NeuralEvaluator, load_checkpoint, predict_policy_value
-    except Exception as exc:  # pragma: no cover - runtime dependency
-        raise RuntimeError(
-            "Neural checkpoint agents require azlite.model + torch. "
-            "Install PyTorch first, or use non-checkpoint agents."
-        ) from exc
-    return NeuralEvaluator, load_checkpoint, predict_policy_value
-
-
-def _make_obs(board: np.ndarray, mark: int, step: int) -> SimpleNamespace:
-    return SimpleNamespace(
-        board=board.reshape(-1).astype(np.int8).tolist(),
-        mark=int(mark),
-        step=int(step),
-        remainingOverageTime=60.0,
-    )
-
-
-def _safe_p95(values: Sequence[float]) -> float:
-    if not values:
-        return 0.0
-    return float(np.percentile(np.asarray(values, dtype=np.float64), 95))
-
-
-def _build_random_agent(seed: Optional[int] = None) -> UnifiedAgent:
-    rng = random.Random(seed)
-
-    def _agent(observation, configuration):
-        board = obs_board_to_numpy(
-            observation.board,
-            rows=int(configuration.rows),
-            columns=int(configuration.columns),
-        )
-        valid = legal_moves(board)
-        if not valid:
-            return 0
-        return int(rng.choice(valid))
-
-    return UnifiedAgent(name="random", fn=_agent, description="uniform legal random")
-
-
-def _build_negamax_agent() -> UnifiedAgent:
-    if MinimaxBitboardAgent is None:
-        raise RuntimeError("MinimaxBitboardAgent is unavailable")
-    engine = MinimaxBitboardAgent(
-        name="negamax",
-        max_depth=20,
-        time_budget_ms=1900.0,
-        use_tt=True,
-    )
-
-    def _agent(observation, configuration):
-        return int(engine.select_action(observation, configuration))
-
-    return UnifiedAgent(name="negamax", fn=_agent, description="bitboard negamax baseline")
-
-
-def _build_original_agent() -> UnifiedAgent:
-    if _submission is None or not hasattr(_submission, "agent"):
-        raise RuntimeError("submission.agent is unavailable")
-
-    def _agent(observation, configuration):
-        return int(_submission.agent(observation, configuration))
-
-    return UnifiedAgent(
-        name="original",
-        fn=_agent,
-        description="current feature/mcts-lite original submission agent",
-    )
-
-
-def _build_heuristic_agent() -> UnifiedAgent:
-    heuristic = HeuristicEvaluator()
-
-    def _agent(observation, configuration):
-        board = obs_board_to_numpy(
-            observation.board,
-            rows=int(configuration.rows),
-            columns=int(configuration.columns),
-        )
-        mark = int(observation.mark)
-        valid = legal_moves(board)
-        if not valid:
-            return 0
-
-        win_col = find_immediate_win(board, mark)
-        if win_col is not None:
-            return int(win_col)
-        opp = 2 if mark == 1 else 1
-        block_col = find_immediate_block(board, mark, opp)
-        if block_col is not None:
-            return int(block_col)
-
-        policy, _ = heuristic.evaluate(board, mark)
-        best = max(valid, key=lambda c: float(policy[c]))
-        return int(best)
-
-    return UnifiedAgent(name="heuristic", fn=_agent, description="heuristic evaluator argmax")
-
-
-def _build_mcts_lite_agent() -> UnifiedAgent:
-    if MCTSAgent is None:
-        raise RuntimeError("MCTS-lite agent is unavailable")
-    engine = MCTSAgent(name="mcts_lite", c_param=1.414, time_budget_ms=1900.0)
-
-    def _agent(observation, configuration):
-        return int(engine.select_action(observation, configuration))
-
-    return UnifiedAgent(name="mcts_lite", fn=_agent, description="legacy UCB1 MCTS-lite")
-
-
-def _build_checkpoint_puct_agent(
-    checkpoint_path: str,
-    device: str,
-    simulations: int,
-) -> UnifiedAgent:
-    NeuralEvaluator, load_checkpoint, _ = _load_model_symbols()
-    model, _ = load_checkpoint(checkpoint_path, device=device)
-    evaluator = NeuralEvaluator(model, device=device)
-
-    def _agent(observation, configuration):
-        board = obs_board_to_numpy(
-            observation.board,
-            rows=int(configuration.rows),
-            columns=int(configuration.columns),
-        )
-        mark = int(observation.mark)
-        valid = legal_moves(board)
-        if not valid:
-            return 0
-        result = run_mcts(
-            board=board,
-            current_player=mark,
-            evaluator=evaluator,
-            num_simulations=max(1, int(simulations)),
-            c_puct=1.5,
-            temperature=0.0,
-            add_dirichlet_noise=False,
-            use_tactical_shortcuts=True,
-            return_root=False,
-        )
-        move = int(result["move"])
-        if move in valid:
-            return move
-        return int(valid[0])
-
-    return UnifiedAgent(
-        name="checkpoint_puct",
-        fn=_agent,
-        description=f"checkpoint+puct ({Path(checkpoint_path).name})",
-    )
-
-
-def _build_checkpoint_policy_agent(
-    checkpoint_path: str,
-    device: str,
-) -> UnifiedAgent:
-    _, load_checkpoint, predict_policy_value = _load_model_symbols()
-    model, _ = load_checkpoint(checkpoint_path, device=device)
-
-    def _agent(observation, configuration):
-        board = obs_board_to_numpy(
-            observation.board,
-            rows=int(configuration.rows),
-            columns=int(configuration.columns),
-        )
-        mark = int(observation.mark)
-        valid = legal_moves(board)
-        if not valid:
-            return 0
-        win_col = find_immediate_win(board, mark)
-        if win_col is not None:
-            return int(win_col)
-        opp = 2 if mark == 1 else 1
-        block_col = find_immediate_block(board, mark, opp)
-        if block_col is not None:
-            return int(block_col)
-
-        policy, _ = predict_policy_value(model, board, mark, device=device)
-        best = max(valid, key=lambda c: float(policy[c]))
-        return int(best)
-
-    return UnifiedAgent(
-        name="checkpoint_policy",
-        fn=_agent,
-        description=f"checkpoint policy-only ({Path(checkpoint_path).name})",
-    )
-
-
-def create_agent(
-    spec: str,
-    checkpoint: Optional[str] = None,
-    previous_best_checkpoint: Optional[str] = None,
-    simulations: int = 100,
-    device: str = "cpu",
-    seed: Optional[int] = None,
-) -> UnifiedAgent:
-    key = spec.strip().lower()
-    if key == "random":
-        return _build_random_agent(seed=seed)
-    if key == "negamax":
-        return _build_negamax_agent()
-    if key in ("original", "submission", "feature_mcts_lite_original"):
-        return _build_original_agent()
-    if key in ("heuristic",):
-        return _build_heuristic_agent()
-    if key in ("mcts_lite", "mcts-lite", "mcts"):
-        return _build_mcts_lite_agent()
-    if key in ("checkpoint_puct", "azlite_checkpoint_puct", "candidate"):
-        if not checkpoint:
-            raise ValueError(f"agent '{spec}' requires --checkpoint")
-        return _build_checkpoint_puct_agent(checkpoint, device=device, simulations=simulations)
-    if key in ("checkpoint_policy", "policy_only", "policy-only"):
-        if not checkpoint:
-            raise ValueError(f"agent '{spec}' requires --checkpoint")
-        return _build_checkpoint_policy_agent(checkpoint, device=device)
-    if key in ("previous_best", "previous_best_puct"):
-        if not previous_best_checkpoint:
-            raise ValueError("agent 'previous_best' requires --previous-best-checkpoint")
-        return _build_checkpoint_puct_agent(
-            previous_best_checkpoint,
-            device=device,
-            simulations=simulations,
-        )
-    if key in ("previous_best_policy",):
-        if not previous_best_checkpoint:
-            raise ValueError("agent 'previous_best_policy' requires --previous-best-checkpoint")
-        return _build_checkpoint_policy_agent(previous_best_checkpoint, device=device)
-    raise ValueError(f"Unsupported agent spec: {spec}")
-
-
-def _play_single_game(
-    agent_p1: UnifiedAgent,
-    agent_p2: UnifiedAgent,
-    act_timeout_sec: float = KAGGLE_ACT_TIMEOUT_SEC,
-) -> Dict[str, Any]:
-    board = np.zeros((ROWS, COLS), dtype=np.int8)
-    cfg = _default_cfg()
-    illegal = {1: 0, 2: 0}
-    timeouts = {1: 0, 2: 0}
-    errors = {1: 0, 2: 0}
-    step_times = {1: [], 2: []}
-    winner = 0
-
-    for step in range(MAX_MOVES):
-        mark = 1 if step % 2 == 0 else 2
-        agent = agent_p1 if mark == 1 else agent_p2
-        obs = _make_obs(board, mark, step)
-
-        t0 = time.perf_counter()
-        action = None
-        error_raised = False
-        try:
-            action = agent.fn(obs, cfg)
-        except Exception:
-            error_raised = True
-        elapsed = float(time.perf_counter() - t0)
-        step_times[mark].append(elapsed)
-
-        if elapsed > float(act_timeout_sec):
-            timeouts[mark] += 1
-            winner = 2 if mark == 1 else 1
-            break
-
-        if error_raised:
-            errors[mark] += 1
-            illegal[mark] += 1
-            winner = 2 if mark == 1 else 1
-            break
-
-        try:
-            col = int(action)
-        except Exception:
-            illegal[mark] += 1
-            winner = 2 if mark == 1 else 1
-            break
-
-        valid = legal_moves(board)
-        if col not in valid:
-            illegal[mark] += 1
-            winner = 2 if mark == 1 else 1
-            break
-
-        board = apply_move(board, col, mark)
-        w = get_winner(board)
-        if w is not None:
-            winner = int(w)
-            break
-        if is_draw(board):
-            winner = 0
-            break
-
-    return {
-        "winner": int(winner),
-        "steps": int(np.count_nonzero(board)),
-        "illegal": illegal,
-        "timeouts": timeouts,
-        "errors": errors,
-        "step_times": step_times,
-    }
-
-
-def play_match(agent_a, agent_b, num_games, swap_sides=True, seed=None):
-    """Play match between two unified agents, tracking reliability metrics."""
-    if not isinstance(agent_a, UnifiedAgent):
-        raise TypeError("agent_a must be UnifiedAgent")
-    if not isinstance(agent_b, UnifiedAgent):
-        raise TypeError("agent_b must be UnifiedAgent")
-
-    n = max(1, int(num_games))
-    swap = bool(swap_sides)
-    rng = random.Random(seed)
-
-    wins = losses = draws = 0
-    total_steps = 0
-    illegal_a = illegal_b = 0
-    timeout_a = timeout_b = 0
-    error_a = error_b = 0
-    step_times_a: List[float] = []
-    step_times_b: List[float] = []
-
-    first_games = n // 2 if swap else n
-    if swap and n % 2 != 0:
-        first_games += 1
-
-    for g in range(n):
-        a_first = (not swap) or (g < first_games)
-        if a_first:
-            p1, p2 = agent_a, agent_b
-        else:
-            p1, p2 = agent_b, agent_a
-
-        game = _play_single_game(
-            p1,
-            p2,
-            act_timeout_sec=KAGGLE_ACT_TIMEOUT_SEC,
-        )
-        winner = int(game["winner"])
-        total_steps += int(game["steps"])
-
-        if a_first:
-            if winner == 1:
-                wins += 1
-            elif winner == 2:
-                losses += 1
-            else:
-                draws += 1
-            illegal_a += int(game["illegal"][1])
-            illegal_b += int(game["illegal"][2])
-            timeout_a += int(game["timeouts"][1])
-            timeout_b += int(game["timeouts"][2])
-            error_a += int(game["errors"][1])
-            error_b += int(game["errors"][2])
-            step_times_a.extend(game["step_times"][1])
-            step_times_b.extend(game["step_times"][2])
-        else:
-            if winner == 2:
-                wins += 1
-            elif winner == 1:
-                losses += 1
-            else:
-                draws += 1
-            illegal_a += int(game["illegal"][2])
-            illegal_b += int(game["illegal"][1])
-            timeout_a += int(game["timeouts"][2])
-            timeout_b += int(game["timeouts"][1])
-            error_a += int(game["errors"][2])
-            error_b += int(game["errors"][1])
-            step_times_a.extend(game["step_times"][2])
-            step_times_b.extend(game["step_times"][1])
-
-        # Add tiny randomized jitter to side alternation only when seed provided:
-        # keeps deterministic loop order while still consuming RNG for reproducibility.
-        if seed is not None:
-            _ = rng.random()
-
-    avg_steps = float(total_steps / n)
-    avg_step_time_a = float(np.mean(step_times_a)) if step_times_a else 0.0
-    avg_step_time_b = float(np.mean(step_times_b)) if step_times_b else 0.0
-    p95_step_time_a = _safe_p95(step_times_a)
-    p95_step_time_b = _safe_p95(step_times_b)
-    step_time_sum_a = float(np.sum(step_times_a)) if step_times_a else 0.0
-    step_time_sum_b = float(np.sum(step_times_b)) if step_times_b else 0.0
-
-    return {
-        "agent_a": agent_a.name,
-        "agent_b": agent_b.name,
-        "num_games": n,
-        "swap_sides": swap,
-        "wins": int(wins),
-        "losses": int(losses),
-        "draws": int(draws),
-        "win_rate": float(wins / n),
-        "illegal_actions": {
-            "agent_a": int(illegal_a),
-            "agent_b": int(illegal_b),
-            "total": int(illegal_a + illegal_b),
-        },
-        "timeouts": {
-            "agent_a": int(timeout_a),
-            "agent_b": int(timeout_b),
-            "total": int(timeout_a + timeout_b),
-        },
-        "errors": {
-            "agent_a": int(error_a),
-            "agent_b": int(error_b),
-            "total": int(error_a + error_b),
-        },
-        "avg_steps": avg_steps,
-        "avg_step_time_sec": {
-            "agent_a": avg_step_time_a,
-            "agent_b": avg_step_time_b,
-        },
-        "p95_step_time_sec": {
-            "agent_a": p95_step_time_a,
-            "agent_b": p95_step_time_b,
-        },
-        "step_time_sum_sec": {
-            "agent_a": step_time_sum_a,
-            "agent_b": step_time_sum_b,
-        },
-        "step_count": {
-            "agent_a": len(step_times_a),
-            "agent_b": len(step_times_b),
-        },
-    }
 
 
 def _aggregate_candidate_metrics(candidate_results: Dict[str, Dict[str, Any]]) -> Dict[str, float]:
@@ -510,8 +37,8 @@ def _aggregate_candidate_metrics(candidate_results: Dict[str, Dict[str, Any]]) -
     total_games = 0
 
     for _, r in candidate_results.items():
-        total_illegal += int(r["illegal_actions"]["agent_a"])
-        total_timeout += int(r["timeouts"]["agent_a"])
+        total_illegal += int(r.get("invalid_actions", {}).get("candidate", r["illegal_actions"]["agent_a"]))
+        total_timeout += int(r.get("candidate_timeouts", r["timeouts"]["agent_a"]))
         total_errors += int(r["errors"]["agent_a"])
         total_step_time_sum += float(r["step_time_sum_sec"]["agent_a"])
         total_step_count += int(r["step_count"]["agent_a"])
@@ -531,7 +58,12 @@ def _aggregate_candidate_metrics(candidate_results: Dict[str, Dict[str, Any]]) -
     }
 
 
-def should_promote_candidate(candidate_results, previous_best_results):
+def should_promote_candidate(
+    candidate_results,
+    previous_best_results,
+    max_opponent_timeout_rate: float = 0.05,
+    max_candidate_timeout_rate: float = 0.01,
+):
     """Gating rules for checkpoint promotion.
 
     Rules:
@@ -541,6 +73,7 @@ def should_promote_candidate(candidate_results, previous_best_results):
       4. illegal actions must be 0.
       5. avg per-step time < Kaggle limit.
       6. p95 step time acceptable.
+      7. if opponent timeouts are high, matchup win-rate is not reliable.
     """
     passed = True
     reasons: List[str] = []
@@ -549,14 +82,33 @@ def should_promote_candidate(candidate_results, previous_best_results):
     prev_negamax = None if not previous_best_results else previous_best_results.get("negamax")
     cand_prevbest = candidate_results.get("previous_best")
 
+    gating_relevant_opponents = {"negamax", "previous_best"}
+    for opp, r in candidate_results.items():
+        games = max(1, int(r.get("num_games", r.get("games", 0)) or 0))
+        cand_timeout_rate = float(
+            r.get("candidate_timeout_rate", float(r.get("candidate_timeouts", r["timeouts"]["agent_a"])) / games)
+        )
+        opp_timeout_rate = float(
+            r.get("opponent_timeout_rate", float(r.get("opponent_timeouts", r["timeouts"]["agent_b"])) / games)
+        )
+        if cand_timeout_rate > float(max_candidate_timeout_rate):
+            passed = False
+            reasons.append(
+                f"{opp}: candidate_timeout_rate {cand_timeout_rate:.3f} "
+                f"> {float(max_candidate_timeout_rate):.3f}"
+            )
+        if opp_timeout_rate > float(max_opponent_timeout_rate):
+            if opp in gating_relevant_opponents:
+                passed = False
+                reasons.append(
+                    f"{opp}: opponent_timeout_rate {opp_timeout_rate:.3f} "
+                    f"> {float(max_opponent_timeout_rate):.3f}; win_rate excluded from gating"
+                )
+
     agg = _aggregate_candidate_metrics(candidate_results)
     if agg["total_illegal_agent_a"] != 0:
         passed = False
         reasons.append(f"illegal actions > 0 ({agg['total_illegal_agent_a']})")
-
-    if agg["total_timeout_agent_a"] != 0:
-        passed = False
-        reasons.append(f"timeouts > 0 ({agg['total_timeout_agent_a']})")
 
     if agg["total_errors_agent_a"] != 0:
         passed = False
@@ -580,7 +132,10 @@ def should_promote_candidate(candidate_results, previous_best_results):
         passed = False
         reasons.append("missing negamax evaluation in candidate_results")
     elif prev_negamax is not None:
-        if float(cand_negamax["win_rate"]) < float(prev_negamax["win_rate"]):
+        if not bool(cand_negamax.get("reliable", True)):
+            passed = False
+            reasons.append("negamax eval unreliable; cannot use for gating")
+        elif float(cand_negamax["win_rate"]) < float(prev_negamax["win_rate"]):
             passed = False
             reasons.append(
                 "vs negamax win rate lower than previous best "
@@ -591,12 +146,25 @@ def should_promote_candidate(candidate_results, previous_best_results):
         if cand_prevbest is None:
             passed = False
             reasons.append("missing vs previous_best match in candidate_results")
+        elif (not bool(cand_prevbest.get("reliable", True))):
+            passed = False
+            reasons.append("vs previous_best eval unreliable; cannot use for gating")
         elif float(cand_prevbest["win_rate"]) < 0.55:
             passed = False
             reasons.append(
                 "vs previous_best win rate below 55% "
                 f"({cand_prevbest['win_rate']:.3f} < 0.550)"
             )
+
+    for opp, r in candidate_results.items():
+        if bool(r.get("reliable", True)):
+            continue
+        if opp not in gating_relevant_opponents:
+            continue
+        passed = False
+        reasons_local = r.get("unreliable_reasons") or []
+        warning = "; ".join(str(x) for x in reasons_local) if reasons_local else "unreliable win-rate due opponent instability"
+        reasons.append(f"{opp}: {warning}")
 
     if passed and not reasons:
         reasons.append("all gating checks passed")
@@ -608,11 +176,12 @@ def _format_console_table(rows: Sequence[Dict[str, Any]]) -> str:
         "Opponent",
         "W/L/D",
         "WR",
-        "Illegal(A)",
+        "FP_WR",
+        "SP_WR",
+        "Invalid(A)",
         "Timeout(A)",
+        "Timeout(B)",
         "AvgSteps",
-        "AvgStepMs(A)",
-        "P95StepMs(A)",
     ]
     col_widths = [max(len(h), 12) for h in headers]
 
@@ -622,11 +191,12 @@ def _format_console_table(rows: Sequence[Dict[str, Any]]) -> str:
             str(r["opponent"]),
             f"{r['wins']}/{r['losses']}/{r['draws']}",
             f"{r['win_rate']*100:.1f}%",
-            str(r["illegal_actions"]["agent_a"]),
-            str(r["timeouts"]["agent_a"]),
+            f"{r.get('first_player_win_rate', 0.0)*100:.1f}%",
+            f"{r.get('second_player_win_rate', 0.0)*100:.1f}%",
+            str(r.get("invalid_actions", {}).get("candidate", r["illegal_actions"]["agent_a"])),
+            str(r.get("candidate_timeouts", r["timeouts"]["agent_a"])),
+            str(r.get("opponent_timeouts", r["timeouts"]["agent_b"])),
             f"{r['avg_steps']:.2f}",
-            f"{r['avg_step_time_sec']['agent_a']*1000:.1f}",
-            f"{r['p95_step_time_sec']['agent_a']*1000:.1f}",
         ]
         formatted_rows.append(line)
         for i, cell in enumerate(line):
@@ -644,24 +214,24 @@ def _format_console_table(rows: Sequence[Dict[str, Any]]) -> str:
 
 def _format_markdown_table(rows: Sequence[Dict[str, Any]]) -> str:
     head = (
-        "| Opponent | W/L/D | WR | Illegal(A) | Timeout(A) | AvgSteps | "
-        "AvgStepMs(A) | P95StepMs(A) |\n"
-        "|---|---:|---:|---:|---:|---:|---:|---:|"
+        "| Opponent | W/L/D | WR | FP_WR | SP_WR | Invalid(A) | Timeout(A) | Timeout(B) | AvgSteps |\n"
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|"
     )
     body_lines = []
     for r in rows:
         body_lines.append(
-            "| {opp} | {w}/{l}/{d} | {wr:.1f}% | {ill} | {to} | {steps:.2f} | {avgms:.1f} | {p95ms:.1f} |".format(
+            "| {opp} | {w}/{l}/{d} | {wr:.1f}% | {fp:.1f}% | {sp:.1f}% | {ill} | {toa} | {tob} | {steps:.2f} |".format(
                 opp=r["opponent"],
                 w=r["wins"],
                 l=r["losses"],
                 d=r["draws"],
                 wr=r["win_rate"] * 100.0,
-                ill=r["illegal_actions"]["agent_a"],
-                to=r["timeouts"]["agent_a"],
+                fp=r.get("first_player_win_rate", 0.0) * 100.0,
+                sp=r.get("second_player_win_rate", 0.0) * 100.0,
+                ill=r.get("invalid_actions", {}).get("candidate", r["illegal_actions"]["agent_a"]),
+                toa=r.get("candidate_timeouts", r["timeouts"]["agent_a"]),
+                tob=r.get("opponent_timeouts", r["timeouts"]["agent_b"]),
                 steps=r["avg_steps"],
-                avgms=r["avg_step_time_sec"]["agent_a"] * 1000.0,
-                p95ms=r["p95_step_time_sec"]["agent_a"] * 1000.0,
             )
         )
     return head + ("\n" + "\n".join(body_lines) if body_lines else "")
@@ -684,6 +254,22 @@ def _warn_random_overfit(candidate_results: Dict[str, Dict[str, Any]]) -> Option
     return None
 
 
+def _collect_reliability_warnings(
+    candidate_results: Dict[str, Dict[str, Any]],
+    max_opponent_timeout_rate: float,
+) -> List[str]:
+    warnings: List[str] = []
+    for opp, r in candidate_results.items():
+        timeout_rate = float(r.get("opponent_timeout_rate", 0.0))
+        if timeout_rate <= float(max_opponent_timeout_rate):
+            continue
+        warnings.append(
+            f"[eval][warning] opponent={opp} timeout_rate={timeout_rate*100.0:.1f}%, "
+            "win_rate is unreliable and excluded from gating."
+        )
+    return warnings
+
+
 def _main() -> None:
     parser = argparse.ArgumentParser(description="Robust evaluation matrix for AlphaZero-lite")
     parser.add_argument("--checkpoint", type=str, default=None, help="Candidate checkpoint path")
@@ -703,6 +289,14 @@ def _main() -> None:
     parser.add_argument("--simulations", type=int, default=100)
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--max-opponent-timeout-rate", type=float, default=0.05)
+    parser.add_argument("--max-candidate-timeout-rate", type=float, default=0.01)
+    parser.add_argument(
+        "--timeout-result-policy",
+        type=str,
+        choices=("loss", "exclude", "fail_eval"),
+        default="fail_eval",
+    )
     parser.add_argument(
         "--previous-best-checkpoint",
         type=str,
@@ -744,6 +338,9 @@ def _main() -> None:
             num_games=int(args.games),
             swap_sides=True,
             seed=int(args.seed) + 1000 + i,
+            max_opponent_timeout_rate=float(args.max_opponent_timeout_rate),
+            max_candidate_timeout_rate=float(args.max_candidate_timeout_rate),
+            timeout_result_policy=str(args.timeout_result_policy),
         )
         result["opponent"] = opp_spec
         candidate_results[opp_spec] = result
@@ -764,6 +361,9 @@ def _main() -> None:
             num_games=max(20, int(args.games)),
             swap_sides=True,
             seed=int(args.seed) + 2000,
+            max_opponent_timeout_rate=float(args.max_opponent_timeout_rate),
+            max_candidate_timeout_rate=float(args.max_candidate_timeout_rate),
+            timeout_result_policy=str(args.timeout_result_policy),
         )
         r_prev["opponent"] = "previous_best"
         candidate_results["previous_best"] = r_prev
@@ -779,7 +379,6 @@ def _main() -> None:
             device=args.device,
             seed=int(args.seed) + 3000,
         )
-        # Compare previous best against same public opponents (except itself).
         for i, (opp_spec, opp_agent) in enumerate(opponent_agents):
             if opp_spec == "previous_best":
                 continue
@@ -789,16 +388,37 @@ def _main() -> None:
                 num_games=int(args.games),
                 swap_sides=True,
                 seed=int(args.seed) + 4000 + i,
+                max_opponent_timeout_rate=float(args.max_opponent_timeout_rate),
+                max_candidate_timeout_rate=float(args.max_candidate_timeout_rate),
+                timeout_result_policy=str(args.timeout_result_policy),
             )
             rr["opponent"] = opp_spec
             previous_best_results[opp_spec] = rr
 
-    passed, gate_reasons = should_promote_candidate(candidate_results, previous_best_results)
+    passed, gate_reasons = should_promote_candidate(
+        candidate_results,
+        previous_best_results,
+        max_opponent_timeout_rate=float(args.max_opponent_timeout_rate),
+        max_candidate_timeout_rate=float(args.max_candidate_timeout_rate),
+    )
     warning = _warn_random_overfit(candidate_results)
+    reliability_warnings = _collect_reliability_warnings(
+        candidate_results,
+        max_opponent_timeout_rate=float(args.max_opponent_timeout_rate),
+    )
+    overall_reliable = True
+    overall_unreliable_reasons: List[str] = []
+    for opp, r in candidate_results.items():
+        if bool(r.get("reliable", True)):
+            continue
+        overall_reliable = False
+        for reason in (r.get("unreliable_reasons") or []):
+            overall_unreliable_reasons.append(f"{opp}: {reason}")
 
     rows = [candidate_results[k] for k in candidate_results.keys()]
     table_text = _format_console_table(rows)
     print("\nEvaluation Matrix")
+    print(f"evaluator_backend={EVALUATOR_BACKEND}")
     print(table_text)
 
     print("\nGating")
@@ -807,6 +427,8 @@ def _main() -> None:
         print(f"- {reason}")
     if warning:
         print(f"\nWARNING: {warning}")
+    for w in reliability_warnings:
+        print(w)
 
     logs_dir = Path(args.logs_dir)
     logs_dir.mkdir(parents=True, exist_ok=True)
@@ -816,22 +438,30 @@ def _main() -> None:
 
     payload = {
         "created_at": datetime.now().isoformat(),
+        "evaluator_backend": EVALUATOR_BACKEND,
         "config": {
             "candidate_agent": args.candidate_agent,
+            "candidate_checkpoint": args.checkpoint,
             "checkpoint": args.checkpoint,
             "opponents": opponents,
             "games": int(args.games),
             "simulations": int(args.simulations),
             "device": args.device,
             "seed": int(args.seed),
+            "max_opponent_timeout_rate": float(args.max_opponent_timeout_rate),
+            "max_candidate_timeout_rate": float(args.max_candidate_timeout_rate),
+            "timeout_result_policy": str(args.timeout_result_policy),
             "previous_best_checkpoint": args.previous_best_checkpoint,
         },
+        "reliable": bool(overall_reliable),
+        "unreliable_reasons": overall_unreliable_reasons,
         "candidate_results": candidate_results,
         "previous_best_results": previous_best_results,
         "gating": {
             "passed": bool(passed),
             "reasons": gate_reasons,
             "warning": warning,
+            "reliability_warnings": reliability_warnings,
         },
     }
     json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -840,6 +470,7 @@ def _main() -> None:
         "# Evaluation Report",
         "",
         f"- Timestamp: `{payload['created_at']}`",
+        f"- Evaluator backend: `{EVALUATOR_BACKEND}`",
         f"- Candidate: `{args.candidate_agent}`",
         f"- Checkpoint: `{args.checkpoint}`",
         f"- Games per matchup: `{int(args.games)}`",
@@ -859,6 +490,11 @@ def _main() -> None:
         md_lines.append(
             "> random is not a reliable gating metric; model may be overfitting weak play or relying on tactical shortcuts only."
         )
+    if reliability_warnings:
+        md_lines.append("")
+        md_lines.append("## Reliability Warnings")
+        for w in reliability_warnings:
+            md_lines.append(f"- {w}")
     md_lines.append("")
     md_lines.append(f"- JSON log: `{json_path}`")
     md_path.write_text("\n".join(md_lines), encoding="utf-8")

@@ -1,0 +1,9 @@
+{
+  "last_iteration": 20,
+  "best_composite": 0.4245,
+  "best_negamax_win_rate": 0.12,
+  "latest_checkpoint": "D:\\205zd\\Desktop\\Kaggle\\checkpoints\\azlite_train\\latest.pt",
+  "best_checkpoint": "D:\\205zd\\Desktop\\Kaggle\\checkpoints\\azlite_train\\best.pt",
+  "buffer_size": 120482,
+  "updated_at": "2026-06-01T03:07:58.261766+00:00"
+}
