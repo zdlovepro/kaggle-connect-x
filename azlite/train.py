@@ -31,6 +31,13 @@ VALUE_LOSS_WEIGHT = 1.0
 GRAD_CLIP_MAX_NORM = 5.0
 VALUE_SAT_THRESH = 0.999
 EPS = 1e-12
+COMPOSITE_WEIGHTS: Dict[str, float] = {
+    "random": 0.03,
+    "negamax": 0.42,
+    "mcts_lite": 0.30,
+    "previous_best": 0.25,
+}
+COMPOSITE_KEY_METRICS = ("negamax", "mcts_lite", "previous_best")
 
 
 def _utc_now_iso() -> str:
@@ -340,37 +347,109 @@ def _train_steps(
     }
 
 
-def _composite_score(
-    eval_random: EvalResult,
-    eval_negamax: EvalResult,
+def _build_composite_details(
+    eval_random: Optional[EvalResult],
+    eval_negamax: Optional[EvalResult],
+    eval_mcts_lite: Optional[EvalResult],
     eval_prev_best: Optional[EvalResult],
-) -> float:
-    prev_wr = eval_prev_best.win_rate if eval_prev_best is not None else 0.5
-    return 0.10 * eval_random.win_rate + 0.65 * eval_negamax.win_rate + 0.25 * prev_wr
+) -> Dict[str, object]:
+    mapping = {
+        "random": eval_random,
+        "negamax": eval_negamax,
+        "mcts_lite": eval_mcts_lite,
+        "previous_best": eval_prev_best,
+    }
+    components: Dict[str, Dict[str, object]] = {}
+    included_weight_sum = 0.0
+    for metric, weight in COMPOSITE_WEIGHTS.items():
+        r = mapping.get(metric)
+        present = r is not None
+        reliable = bool(r.reliable) if present else False
+        included = bool(present and reliable)
+        if included:
+            included_weight_sum += float(weight)
+        components[metric] = {
+            "configured_weight": float(weight),
+            "normalized_weight": 0.0,
+            "present": bool(present),
+            "reliable": bool(reliable),
+            "included": bool(included),
+            "win_rate": float(r.win_rate) if present else None,
+            "status": (
+                "included"
+                if included
+                else ("unreliable" if present else "missing")
+            ),
+        }
+
+    score = None
+    if included_weight_sum > 0:
+        score = 0.0
+        for metric, comp in components.items():
+            if not bool(comp["included"]):
+                continue
+            norm_w = float(comp["configured_weight"]) / float(included_weight_sum)
+            comp["normalized_weight"] = norm_w
+            score += norm_w * float(comp["win_rate"])
+
+    all_key_unreliable = all(
+        (mapping.get(metric) is None) or (not bool(mapping[metric].reliable))
+        for metric in COMPOSITE_KEY_METRICS
+    )
+    return {
+        "score": score,
+        "weights": dict(COMPOSITE_WEIGHTS),
+        "components": components,
+        "included_weight_sum": float(included_weight_sum),
+        "all_key_metrics_unreliable": bool(all_key_unreliable),
+        "key_metrics": list(COMPOSITE_KEY_METRICS),
+    }
 
 
 def _should_promote_to_best(
-    eval_random: EvalResult,
-    eval_negamax: EvalResult,
+    eval_random: Optional[EvalResult],
+    eval_negamax: Optional[EvalResult],
+    eval_mcts_lite: Optional[EvalResult],
     eval_prev_best: Optional[EvalResult],
     best_metrics: Dict[str, float],
-) -> Tuple[bool, str, float]:
-    score = _composite_score(eval_random, eval_negamax, eval_prev_best)
+) -> Tuple[bool, str, float, Dict[str, object]]:
+    composite_details = _build_composite_details(
+        eval_random=eval_random,
+        eval_negamax=eval_negamax,
+        eval_mcts_lite=eval_mcts_lite,
+        eval_prev_best=eval_prev_best,
+    )
+    score_raw = composite_details.get("score")
+    score = float(score_raw) if score_raw is not None else float("nan")
     best_score = float(best_metrics.get("best_composite", -1.0))
     best_negamax = float(best_metrics.get("best_negamax_win_rate", -1.0))
+    best_mcts = float(best_metrics.get("best_mcts_lite_win_rate", -1.0))
 
-    # Guardrails: not random-only; require negamax and previous-best consistency.
-    if eval_prev_best is not None and eval_prev_best.win_rate < 0.5:
-        return False, "failed vs previous best (<50%)", score
+    if bool(composite_details.get("all_key_metrics_unreliable", False)):
+        return False, "all key metrics unreliable/missing", score, composite_details
+
+    if eval_negamax is None:
+        return False, "missing negamax eval", score, composite_details
     if not eval_negamax.reliable:
-        return False, "negamax matchup unreliable due opponent timeouts", score
+        return False, "negamax matchup unreliable due opponent timeouts", score, composite_details
+
+    if eval_mcts_lite is not None and (not eval_mcts_lite.reliable):
+        return False, "mcts_lite matchup unreliable due opponent timeouts", score, composite_details
+
+    # Guardrails: random is only sanity-check; rely on stronger opponents.
+    if eval_prev_best is not None and eval_prev_best.win_rate < 0.5:
+        return False, "failed vs previous best (<50%)", score, composite_details
     if eval_prev_best is not None and (not eval_prev_best.reliable):
-        return False, "previous-best matchup unreliable due opponent timeouts", score
+        return False, "previous-best matchup unreliable due opponent timeouts", score, composite_details
     if best_negamax >= 0.0 and eval_negamax.win_rate + 1e-9 < (best_negamax - 0.03):
-        return False, "negamax regressed too much", score
+        return False, "negamax regressed too much", score, composite_details
+    if eval_mcts_lite is not None and best_mcts >= 0.0 and eval_mcts_lite.win_rate + 1e-9 < (best_mcts - 0.03):
+        return False, "mcts_lite regressed too much", score, composite_details
+    if math.isnan(score):
+        return False, "composite unavailable (no reliable component)", score, composite_details
     if score <= best_score + 1e-9:
-        return False, "composite score not improved", score
-    return True, "composite improved with stability checks", score
+        return False, "composite score not improved", score, composite_details
+    return True, "composite improved with stability checks", score, composite_details
 
 
 def _load_train_state(state_path: Path) -> Dict[str, object]:
@@ -418,7 +497,7 @@ def _main() -> None:
         help="Optional NPZ path(s), comma-separated, loaded into replay buffer before training",
     )
     parser.add_argument("--eval-interval", type=int, default=1)
-    parser.add_argument("--eval-games", type=int, default=16)
+    parser.add_argument("--eval-games", type=int, default=100)
     parser.add_argument("--eval-act-timeout-sec", type=float, default=eval_core.KAGGLE_ACT_TIMEOUT_SEC)
     parser.add_argument("--max-opponent-timeout-rate", type=float, default=0.05)
     parser.add_argument("--max-candidate-timeout-rate", type=float, default=0.01)
@@ -439,7 +518,14 @@ def _main() -> None:
     parser.add_argument("--opponent-timeout-ms", type=float, default=None)
     parser.add_argument("--eval-games-random", type=int, default=None)
     parser.add_argument("--eval-games-negamax", type=int, default=None)
+    parser.add_argument("--eval-games-mcts-lite", type=int, default=None)
     parser.add_argument("--eval-games-previous-best", type=int, default=None)
+    parser.add_argument(
+        "--eval-mcts-lite-every",
+        type=int,
+        default=2,
+        help="Evaluate vs mcts_lite every N eval rounds (1 means every round).",
+    )
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
@@ -458,6 +544,7 @@ def _main() -> None:
         opponent_timeout_ms=args.opponent_timeout_ms,
         eval_games_random=args.eval_games_random,
         eval_games_negamax=args.eval_games_negamax,
+        eval_games_mcts_lite=args.eval_games_mcts_lite,
         eval_games_previous_best=args.eval_games_previous_best,
     )
 
@@ -476,7 +563,9 @@ def _main() -> None:
     best_metrics = {
         "best_composite": float(state.get("best_composite", -1.0)),
         "best_negamax_win_rate": float(state.get("best_negamax_win_rate", -1.0)),
+        "best_mcts_lite_win_rate": float(state.get("best_mcts_lite_win_rate", -1.0)),
     }
+    best_composite_details = state.get("best_composite_details")
     best_iteration = int(state.get("best_iteration", 0) or 0)
 
     # 1) Load model + optimizer
@@ -522,12 +611,13 @@ def _main() -> None:
     print(f"[train] evaluator_backend={eval_core.EVALUATOR_BACKEND}")
     print(
         "[train] eval_profile={profile} candidate_timeout_ms={cand:.0f} opponent_timeout_ms={opp:.0f} "
-        "games(random/negamax/previous_best)={gr}/{gn}/{gp}".format(
+        "games(random/negamax/mcts/previous_best)={gr}/{gn}/{gm}/{gp}".format(
             profile=eval_cfg["eval_profile"],
             cand=float(eval_cfg["candidate_timeout_ms"]),
             opp=float(eval_cfg["opponent_timeout_ms"]),
             gr=eval_core.games_for_opponent(eval_cfg, "random"),
             gn=eval_core.games_for_opponent(eval_cfg, "negamax"),
+            gm=eval_core.games_for_opponent(eval_cfg, "mcts_lite"),
             gp=eval_core.games_for_opponent(eval_cfg, "previous_best"),
         )
     )
@@ -592,10 +682,12 @@ def _main() -> None:
 
         eval_random = None
         eval_negamax = None
+        eval_mcts_lite = None
         eval_prev_best = None
         gate_passed = False
         gate_reason = "evaluation skipped"
         composite = float("nan")
+        composite_details: Dict[str, object] = {}
 
         # 6) quick evaluation
         if int(args.eval_interval) > 0 and (iteration % int(args.eval_interval) == 0):
@@ -631,6 +723,23 @@ def _main() -> None:
                 max_candidate_timeout_rate=float(args.max_candidate_timeout_rate),
                 timeout_result_policy=str(args.timeout_result_policy),
             )
+            mcts_every = max(1, int(args.eval_mcts_lite_every))
+            if iteration % mcts_every == 0:
+                eval_mcts_lite = _evaluate_vs(
+                    current_agent,
+                    "mcts_lite",
+                    games=eval_core.games_for_opponent(eval_cfg, "mcts_lite"),
+                    seed=int(args.seed) + iteration * 100 + 4,
+                    simulations=int(args.simulations),
+                    device=device,
+                    candidate_timeout_ms=float(eval_cfg["candidate_timeout_ms"]),
+                    opponent_timeout_ms=float(eval_cfg["opponent_timeout_ms"]),
+                    eval_profile=str(eval_cfg["eval_profile"]),
+                    opponent_time_budget_ms=float(eval_cfg["opponent_timeout_ms"]),
+                    max_opponent_timeout_rate=float(args.max_opponent_timeout_rate),
+                    max_candidate_timeout_rate=float(args.max_candidate_timeout_rate),
+                    timeout_result_policy=str(args.timeout_result_policy),
+                )
 
             if best_ckpt_path.exists():
                 best_model, _, _ = _load_model_and_optimizer(best_ckpt_path, device=device, lr=float(args.lr))
@@ -651,9 +760,10 @@ def _main() -> None:
                 )
 
             # 7) gating for best checkpoint
-            gate_passed, gate_reason, composite = _should_promote_to_best(
+            gate_passed, gate_reason, composite, composite_details = _should_promote_to_best(
                 eval_random=eval_random,
                 eval_negamax=eval_negamax,
+                eval_mcts_lite=eval_mcts_lite,
                 eval_prev_best=eval_prev_best,
                 best_metrics=best_metrics,
             )
@@ -666,13 +776,18 @@ def _main() -> None:
                     "opponent_timeout_ms": float(eval_cfg["opponent_timeout_ms"]),
                     "random": eval_random.__dict__,
                     "negamax": eval_negamax.__dict__,
+                    "mcts_lite": eval_mcts_lite.__dict__ if eval_mcts_lite else None,
                     "previous_best": eval_prev_best.__dict__ if eval_prev_best else None,
                     "composite_score": float(composite),
+                    "composite": composite_details,
                     "gate_reason": gate_reason,
                 }
                 save_checkpoint(model, optimizer, best_ckpt_path, metadata=best_meta)
                 best_metrics["best_composite"] = float(composite)
                 best_metrics["best_negamax_win_rate"] = float(eval_negamax.win_rate)
+                if eval_mcts_lite is not None:
+                    best_metrics["best_mcts_lite_win_rate"] = float(eval_mcts_lite.win_rate)
+                best_composite_details = composite_details
                 best_iteration = int(iteration)
 
         # 5/6/7 logs
@@ -689,6 +804,7 @@ def _main() -> None:
         )
         print("[train] " + _format_eval("eval vs random", eval_random))
         print("[train] " + _format_eval("eval vs negamax", eval_negamax))
+        print("[train] " + _format_eval("eval vs mcts_lite", eval_mcts_lite))
         print("[train] " + _format_eval("eval vs previous best", eval_prev_best))
         if eval_random is not None:
             print(
@@ -711,14 +827,21 @@ def _main() -> None:
                 "best_iteration": int(best_iteration),
                 "best_composite": float(best_metrics["best_composite"]),
                 "best_negamax_win_rate": float(best_metrics["best_negamax_win_rate"]),
+                "best_mcts_lite_win_rate": float(best_metrics["best_mcts_lite_win_rate"]),
+                "best_composite_details": best_composite_details,
                 "latest_composite": latest_composite,
                 "latest_negamax_win_rate": latest_negamax_win_rate,
+                "latest_mcts_lite_win_rate": (
+                    float(eval_mcts_lite.win_rate) if eval_mcts_lite is not None else None
+                ),
+                "latest_composite_details": composite_details if composite_details else None,
                 "latest_checkpoint": str(latest_ckpt_path.resolve()),
                 "best_checkpoint": str(best_ckpt_path.resolve()) if best_ckpt_path.exists() else "",
                 "eval_profile": str(eval_cfg["eval_profile"]),
                 "candidate_timeout_ms": float(eval_cfg["candidate_timeout_ms"]),
                 "opponent_timeout_ms": float(eval_cfg["opponent_timeout_ms"]),
                 "eval_games_by_opponent": dict(eval_cfg.get("games_by_opponent", {})),
+                "eval_mcts_lite_every": int(args.eval_mcts_lite_every),
                 "buffer_size": int(len(replay)),
                 "updated_at": _utc_now_iso(),
             }

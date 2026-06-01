@@ -23,9 +23,68 @@ from azlite.eval_core import (
     resolve_eval_config,
 )
 
+COMPOSITE_WEIGHTS: Dict[str, float] = {
+    "random": 0.03,
+    "negamax": 0.42,
+    "mcts_lite": 0.30,
+    "previous_best": 0.25,
+}
+COMPOSITE_KEY_METRICS: Tuple[str, ...] = ("negamax", "mcts_lite", "previous_best")
+
 
 def _ts_now() -> str:
     return datetime.now().strftime("%Y%m%d_%H%M%S")
+
+
+def compute_composite(candidate_results: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+    components: Dict[str, Dict[str, Any]] = {}
+    included_weight_sum = 0.0
+
+    for metric, weight in COMPOSITE_WEIGHTS.items():
+        rec = candidate_results.get(metric)
+        present = rec is not None
+        reliable = bool(rec.get("reliable", True)) if present else False
+        win_rate = float(rec.get("win_rate", 0.0)) if present else None
+        included = bool(present and reliable)
+        if included:
+            included_weight_sum += float(weight)
+        components[metric] = {
+            "configured_weight": float(weight),
+            "normalized_weight": 0.0,
+            "present": bool(present),
+            "reliable": bool(reliable),
+            "included": bool(included),
+            "win_rate": win_rate,
+            "status": (
+                "included"
+                if included
+                else ("unreliable" if present else "missing")
+            ),
+        }
+
+    score = None
+    if included_weight_sum > 0:
+        score = 0.0
+        for metric, comp in components.items():
+            if not comp["included"]:
+                continue
+            norm_w = float(comp["configured_weight"]) / float(included_weight_sum)
+            comp["normalized_weight"] = norm_w
+            score += norm_w * float(comp["win_rate"])
+
+    all_key_unreliable = all(
+        (metric not in candidate_results) or (not bool(candidate_results[metric].get("reliable", True)))
+        for metric in COMPOSITE_KEY_METRICS
+    )
+
+    return {
+        "score": score,
+        "weights": dict(COMPOSITE_WEIGHTS),
+        "components": components,
+        "included_weight_sum": float(included_weight_sum),
+        "all_key_metrics_unreliable": bool(all_key_unreliable),
+        "key_metrics": list(COMPOSITE_KEY_METRICS),
+    }
 
 
 def _aggregate_candidate_metrics(candidate_results: Dict[str, Dict[str, Any]]) -> Dict[str, float]:
@@ -81,10 +140,17 @@ def should_promote_candidate(
     reasons: List[str] = []
 
     cand_negamax = candidate_results.get("negamax")
+    cand_mcts = candidate_results.get("mcts_lite")
     prev_negamax = None if not previous_best_results else previous_best_results.get("negamax")
+    prev_mcts = None if not previous_best_results else previous_best_results.get("mcts_lite")
     cand_prevbest = candidate_results.get("previous_best")
+    composite_info = compute_composite(candidate_results)
 
-    gating_relevant_opponents = {"negamax", "previous_best"}
+    if bool(composite_info.get("all_key_metrics_unreliable", False)):
+        passed = False
+        reasons.append("all key metrics (negamax/mcts_lite/previous_best) are unreliable or missing")
+
+    gating_relevant_opponents = {"negamax", "mcts_lite", "previous_best"}
     for opp, r in candidate_results.items():
         games = max(1, int(r.get("num_games", r.get("games", 0)) or 0))
         cand_timeout_rate = float(
@@ -142,6 +208,23 @@ def should_promote_candidate(
             reasons.append(
                 "vs negamax win rate lower than previous best "
                 f"({cand_negamax['win_rate']:.3f} < {prev_negamax['win_rate']:.3f})"
+            )
+
+    if cand_mcts is None:
+        passed = False
+        reasons.append("missing mcts_lite evaluation in candidate_results")
+    elif not bool(cand_mcts.get("reliable", True)):
+        passed = False
+        reasons.append("mcts_lite eval unreliable; cannot use for gating")
+    elif prev_mcts is not None:
+        if not bool(prev_mcts.get("reliable", True)):
+            passed = False
+            reasons.append("previous-best mcts_lite eval unreliable; cannot compare")
+        elif float(cand_mcts["win_rate"]) < float(prev_mcts["win_rate"]):
+            passed = False
+            reasons.append(
+                "vs mcts_lite win rate lower than previous best "
+                f"({cand_mcts['win_rate']:.3f} < {prev_mcts['win_rate']:.3f})"
             )
 
     if previous_best_results is not None:
@@ -444,6 +527,7 @@ def _main() -> None:
         max_opponent_timeout_rate=float(args.max_opponent_timeout_rate),
         max_candidate_timeout_rate=float(args.max_candidate_timeout_rate),
     )
+    composite = compute_composite(candidate_results)
     warning = _warn_random_overfit(candidate_results)
     reliability_warnings = _collect_reliability_warnings(
         candidate_results,
@@ -472,6 +556,10 @@ def _main() -> None:
 
     print("\nGating")
     print(f"passed={passed}")
+    if composite.get("score") is None:
+        print("composite=unavailable (no reliable component)")
+    else:
+        print(f"composite={float(composite['score']):.4f}")
     for reason in gate_reasons:
         print(f"- {reason}")
     if warning:
@@ -514,6 +602,7 @@ def _main() -> None:
         "unreliable_reasons": overall_unreliable_reasons,
         "candidate_results": candidate_results,
         "previous_best_results": previous_best_results,
+        "composite": composite,
         "gating": {
             "passed": bool(passed),
             "reasons": gate_reasons,
@@ -522,6 +611,10 @@ def _main() -> None:
         },
     }
     json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    composite_text = "unavailable"
+    if composite.get("score") is not None:
+        composite_text = f"{float(composite['score']):.4f}"
 
     md_lines = [
         "# Evaluation Report",
@@ -541,6 +634,7 @@ def _main() -> None:
         "",
         "## Gating",
         f"- Passed: `{passed}`",
+        f"- Composite: `{composite_text}`",
     ]
     for reason in gate_reasons:
         md_lines.append(f"- {reason}")

@@ -4,6 +4,7 @@ from azlite.eval_core import games_for_opponent, resolve_eval_config
 from azlite.evaluate import (
     UnifiedAgent,
     _warn_random_overfit,
+    compute_composite,
     play_match,
     should_promote_candidate,
 )
@@ -126,6 +127,18 @@ def test_should_promote_candidate_enforces_rules():
             "p95_step_time_sec": {"agent_a": 0.25},
             "reliable": True,
         },
+        "mcts_lite": {
+            "win_rate": 0.61,
+            "num_games": 10,
+            "illegal_actions": {"agent_a": 0, "agent_b": 0},
+            "timeouts": {"agent_a": 0, "agent_b": 0},
+            "errors": {"agent_a": 0, "agent_b": 0},
+            "avg_steps": 20.0,
+            "step_count": {"agent_a": 200},
+            "step_time_sum_sec": {"agent_a": 20.0},
+            "p95_step_time_sec": {"agent_a": 0.25},
+            "reliable": True,
+        },
         "previous_best": {
             "win_rate": 0.56,
             "num_games": 10,
@@ -150,7 +163,20 @@ def test_should_promote_candidate_enforces_rules():
             "step_count": {"agent_a": 200},
             "step_time_sum_sec": {"agent_a": 20.0},
             "p95_step_time_sec": {"agent_a": 0.20},
-        }
+            "reliable": True,
+        },
+        "mcts_lite": {
+            "win_rate": 0.59,
+            "num_games": 10,
+            "illegal_actions": {"agent_a": 0, "agent_b": 0},
+            "timeouts": {"agent_a": 0, "agent_b": 0},
+            "errors": {"agent_a": 0, "agent_b": 0},
+            "avg_steps": 20.0,
+            "step_count": {"agent_a": 200},
+            "step_time_sum_sec": {"agent_a": 20.0},
+            "p95_step_time_sec": {"agent_a": 0.20},
+            "reliable": True,
+        },
     }
     passed, reasons = should_promote_candidate(candidate_results, previous_best_results)
     assert passed is True
@@ -197,3 +223,21 @@ def test_resolve_eval_config_explicit_overrides_profile():
     assert cfg["candidate_timeout_ms"] == 2100.0
     assert cfg["opponent_timeout_ms"] == 4700.0
     assert games_for_opponent(cfg, "negamax") == 77
+
+
+def test_compute_composite_excludes_unreliable_and_renormalizes():
+    candidate_results = {
+        "random": {"win_rate": 0.95, "reliable": True},
+        "negamax": {"win_rate": 0.30, "reliable": True},
+        "mcts_lite": {"win_rate": 0.40, "reliable": False},
+        "previous_best": {"win_rate": 0.55, "reliable": True},
+    }
+    c = compute_composite(candidate_results)
+    assert c["score"] is not None
+    assert c["components"]["mcts_lite"]["included"] is False
+    norm_sum = sum(
+        float(v["normalized_weight"])
+        for v in c["components"].values()
+        if bool(v["included"])
+    )
+    assert abs(norm_sum - 1.0) < 1e-6

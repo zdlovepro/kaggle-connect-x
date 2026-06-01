@@ -315,6 +315,7 @@ def _evaluate_checkpoint_matrix(
         max_opponent_timeout_rate=float(max_opponent_timeout_rate),
         max_candidate_timeout_rate=float(max_candidate_timeout_rate),
     )
+    composite = eval_mod.compute_composite(candidate_results)
     warning = _warning_random_overfit(candidate_results)
     reliability_warnings = []
     overall_reliable = True
@@ -363,6 +364,7 @@ def _evaluate_checkpoint_matrix(
         "unreliable_reasons": overall_unreliable_reasons,
         "candidate_results": candidate_results,
         "previous_best_results": previous_best_results,
+        "composite": composite,
         "gating": {
             "passed": bool(passed),
             "reasons": reasons,
@@ -403,6 +405,11 @@ def _evaluate_checkpoint_matrix(
         "## Gating",
         f"- Passed: `{passed}`",
         f"- Reliable: `{overall_reliable}`",
+        (
+            f"- Composite: `{float(composite['score']):.4f}`"
+            if composite.get("score") is not None
+            else "- Composite: `unavailable`"
+        ),
     ]
     for reason in reasons:
         md_lines.append(f"- {reason}")
@@ -500,7 +507,7 @@ def _recommend_next_params(args: argparse.Namespace, latest_eval: Optional[Dict[
         )
         return recs
 
-    if "random high but negamax low" in bottleneck or "negamax" in bottleneck:
+    if "random is saturated" in bottleneck or "negamax" in bottleneck:
         recs.append(
             f"`--simulations {int(args.simulations) + 20}` raise search quality for stronger targets."
         )
@@ -548,8 +555,8 @@ def _infer_bottleneck(latest_eval: Optional[Dict[str, Any]]) -> str:
     wr_mcts = float(cand.get("mcts_lite", {}).get("win_rate", 0.0))
     wr_prev = float(cand.get("previous_best", {}).get("win_rate", 1.0))
 
-    if wr_random >= 0.8 and wr_nega <= 0.55:
-        return "strength bottleneck: random high but negamax low."
+    if wr_random >= 0.8 and (wr_nega <= 0.55 or wr_mcts <= 0.55 or wr_prev <= 0.55):
+        return "random is saturated; progress should be measured against negamax/mcts_lite/previous_best."
     if wr_prev < 0.55:
         return "regression bottleneck: weak edge vs previous best."
     if wr_nega < 0.5:
@@ -922,8 +929,11 @@ def _run_selfplay(
         cmd.extend(["--eval-games-random", str(int(args.eval_games_random))])
     if args.eval_games_negamax is not None:
         cmd.extend(["--eval-games-negamax", str(int(args.eval_games_negamax))])
+    if args.eval_games_mcts_lite is not None:
+        cmd.extend(["--eval-games-mcts-lite", str(int(args.eval_games_mcts_lite))])
     if args.eval_games_previous_best is not None:
         cmd.extend(["--eval-games-previous-best", str(int(args.eval_games_previous_best))])
+    cmd.extend(["--eval-mcts-lite-every", str(int(args.train_eval_mcts_lite_every))])
     if args.resume:
         cmd.append("--resume")
     if start_ckpt is not None and start_ckpt.exists() and not args.resume:
@@ -1163,6 +1173,7 @@ def _main() -> None:
         default="quick",
         help="Profile used by azlite.train quick evaluations.",
     )
+    parser.add_argument("--train-eval-mcts-lite-every", type=int, default=2)
     parser.add_argument("--candidate-timeout-ms", type=float, default=None)
     parser.add_argument("--opponent-timeout-ms", type=float, default=None)
     parser.add_argument("--eval-games-random", type=int, default=None)
