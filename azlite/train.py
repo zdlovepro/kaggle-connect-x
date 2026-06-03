@@ -26,6 +26,7 @@ from azlite.board import find_immediate_block, find_immediate_win, legal_moves, 
 from azlite.model import ConnectXNet, NeuralEvaluator, save_checkpoint
 from azlite.puct_mcts import run_mcts
 from azlite.replay_buffer import ReplayBuffer
+from azlite.runtime import configure_cpu_runtime, suggest_cpu_plan
 from azlite.self_play import MCTS_TARGET_VERSION, generate_self_play_games
 
 
@@ -702,6 +703,9 @@ def _main() -> None:
         default="alternate",
         help="Which checkpoint drives self-play data generation once best.pt exists.",
     )
+    parser.add_argument("--self-play-workers", type=int, default=None)
+    parser.add_argument("--main-cpu-threads", type=int, default=None)
+    parser.add_argument("--worker-cpu-threads", type=int, default=1)
     parser.add_argument(
         "--allow-legacy-teacher-data",
         action="store_true",
@@ -731,6 +735,23 @@ def _main() -> None:
 
     _set_seed(int(args.seed))
     device = str(args.device)
+    cpu_plan = suggest_cpu_plan()
+    main_cpu_threads = (
+        int(args.main_cpu_threads)
+        if args.main_cpu_threads is not None
+        else int(cpu_plan["main_threads"])
+    )
+    self_play_workers = (
+        int(args.self_play_workers)
+        if args.self_play_workers is not None
+        else int(cpu_plan["selfplay_workers"])
+    )
+    worker_cpu_threads = max(1, int(args.worker_cpu_threads))
+    if device == "cpu":
+        configure_cpu_runtime(main_cpu_threads)
+    elif self_play_workers > 1:
+        print("[train] non-cpu device detected; forcing self_play_workers=1 for stability")
+        self_play_workers = 1
 
     ckpt_dir = Path(args.checkpoint_dir)
     ckpt_dir.mkdir(parents=True, exist_ok=True)
@@ -848,6 +869,15 @@ def _main() -> None:
             am=str(args.selfplay_actor_mode),
         )
     )
+    print(
+        "[train] cpu plan total={total} main_threads={main} self_play_workers={spw} worker_threads={wt} reserve={reserve}".format(
+            total=cpu_plan["total_cpus"],
+            main=main_cpu_threads,
+            spw=max(1, int(self_play_workers)),
+            wt=worker_cpu_threads,
+            reserve=cpu_plan["reserve_cores"],
+        )
+    )
     print(f"[train] evaluator_backend={eval_core.EVALUATOR_BACKEND}")
     print(
         "[train] eval_profile={profile} candidate_timeout_ms={cand:.0f} opponent_timeout_ms={opp:.0f} "
@@ -915,6 +945,22 @@ def _main() -> None:
             model.eval()
 
         selfplay_t0 = time.perf_counter()
+        selfplay_checkpoint_path: Optional[Path] = None
+        if max(1, int(self_play_workers)) > 1:
+            if actor_source == "best":
+                selfplay_checkpoint_path = best_ckpt_path
+            else:
+                selfplay_checkpoint_path = ckpt_dir / "_selfplay_actor_tmp.pt"
+                save_checkpoint(
+                    actor_model,
+                    None,
+                    selfplay_checkpoint_path,
+                    metadata={
+                        "iteration": int(iteration),
+                        "simulations": int(args.simulations),
+                        "actor_source": actor_source,
+                    },
+                )
         selfplay_npz = generate_self_play_games(
             model=actor_model,
             num_games=int(args.self_play_games),
@@ -925,7 +971,17 @@ def _main() -> None:
             c_puct=1.5,
             add_dirichlet_noise=True,
             use_tactical_shortcuts=False,
+            checkpoint_path=str(selfplay_checkpoint_path) if selfplay_checkpoint_path else None,
+            workers=max(1, int(self_play_workers)),
+            main_cpu_threads=main_cpu_threads,
+            worker_cpu_threads=worker_cpu_threads,
+            seed=int(args.seed) + (int(iteration) * 10007),
         )
+        if selfplay_checkpoint_path is not None and selfplay_checkpoint_path.name == "_selfplay_actor_tmp.pt":
+            try:
+                selfplay_checkpoint_path.unlink()
+            except Exception:
+                pass
         selfplay_sec = time.perf_counter() - selfplay_t0
         selfplay_meta = _load_selfplay_metadata(selfplay_npz)
         avg_game_length = float(selfplay_meta.get("avg_game_length", 0.0))
@@ -1215,6 +1271,9 @@ def _main() -> None:
                 "teacher_batch_ratio_end": float(args.teacher_batch_ratio_end),
                 "teacher_batch_ratio_current": float(teacher_batch_ratio),
                 "selfplay_actor_mode": str(args.selfplay_actor_mode),
+                "self_play_workers": int(self_play_workers),
+                "main_cpu_threads": int(main_cpu_threads),
+                "worker_cpu_threads": int(worker_cpu_threads),
                 "updated_at": _utc_now_iso(),
             }
         )

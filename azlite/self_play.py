@@ -7,6 +7,7 @@ Core rule:
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ProcessPoolExecutor, as_completed
 import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -25,6 +26,7 @@ from azlite.board import (
 )
 from azlite.model import ConnectXNet, NeuralEvaluator, load_checkpoint
 from azlite.puct_mcts import run_mcts
+from azlite.runtime import configure_cpu_runtime, configure_worker_runtime, suggest_cpu_plan
 
 
 ROWS = 6
@@ -112,6 +114,7 @@ def play_self_play_game(
     add_dirichlet_noise=True,
     use_tactical_shortcuts=False,
     max_moves=42,
+    rng: Optional[np.random.Generator] = None,
 ) -> List[SelfPlayExample]:
     """Play one self-play game and return (state, pi, z) examples."""
     board = np.zeros((ROWS, COLS), dtype=np.int8)
@@ -121,7 +124,7 @@ def play_self_play_game(
     in_channels = int(getattr(model, "in_channels", 3))
     include_legal_channel = in_channels >= 3
     evaluator = NeuralEvaluator(model, device=device)
-    rng = np.random.default_rng()
+    rng = rng if rng is not None else np.random.default_rng()
 
     for move_number in range(int(max_moves)):
         if terminal_value(board, current_player) is not None:
@@ -234,23 +237,23 @@ def _next_selfplay_path(output_dir: Path) -> Path:
     return output_dir / f"selfplay_{max_id + 1:06d}.npz"
 
 
-def generate_self_play_games(
+def _run_self_play_games_sequential(
     model,
     num_games,
     num_simulations,
     device="cpu",
     augment=True,
-    output_dir="data/selfplay",
     c_puct=1.5,
     add_dirichlet_noise=True,
     use_tactical_shortcuts=False,
-) -> Path:
-    """Generate self-play examples and save as NPZ."""
+    seed: int = 42,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Dict[str, object]]:
     all_examples: List[SelfPlayExample] = []
     game_lengths: List[int] = []
     winner_distribution = {"player1": 0, "player2": 0, "draw": 0}
 
     for game_idx in range(1, int(num_games) + 1):
+        game_rng = np.random.default_rng(int(seed) + int(game_idx * 7919 + num_simulations * 13))
         game_examples = play_self_play_game(
             model=model,
             num_simulations=int(num_simulations),
@@ -259,6 +262,7 @@ def generate_self_play_games(
             add_dirichlet_noise=bool(add_dirichlet_noise),
             use_tactical_shortcuts=bool(use_tactical_shortcuts),
             max_moves=42,
+            rng=game_rng,
         )
         if not game_examples:
             winner_distribution["draw"] += 1
@@ -299,7 +303,16 @@ def generate_self_play_games(
         "mcts_target_version": MCTS_TARGET_VERSION,
         "created_at": _utc_now_iso(),
     }
+    return states, policies, values, meta
 
+
+def _save_self_play_npz(
+    states: np.ndarray,
+    policies: np.ndarray,
+    values: np.ndarray,
+    meta: Dict[str, object],
+    output_dir: str,
+) -> Path:
     out_dir = Path(output_dir)
     out_path = _next_selfplay_path(out_dir)
     np.savez_compressed(
@@ -314,6 +327,160 @@ def generate_self_play_games(
         f"states={states.shape} policies={policies.shape} values={values.shape}"
     )
     return out_path
+
+
+def _self_play_worker(payload: Dict[str, object]):
+    configure_worker_runtime(int(payload.get("worker_cpu_threads", 1) or 1))
+    model, _ = _load_model_for_self_play(
+        checkpoint=str(payload["checkpoint_path"]) if payload.get("checkpoint_path") else None,
+        device=str(payload["device"]),
+    )
+    return _run_self_play_games_sequential(
+        model=model,
+        num_games=int(payload["num_games"]),
+        num_simulations=int(payload["num_simulations"]),
+        device=str(payload["device"]),
+        augment=bool(payload["augment"]),
+        c_puct=float(payload["c_puct"]),
+        add_dirichlet_noise=bool(payload["add_dirichlet_noise"]),
+        use_tactical_shortcuts=bool(payload["use_tactical_shortcuts"]),
+        seed=int(payload["seed"]),
+    )
+
+
+def generate_self_play_games(
+    model,
+    num_games,
+    num_simulations,
+    device="cpu",
+    augment=True,
+    output_dir="data/selfplay",
+    c_puct=1.5,
+    add_dirichlet_noise=True,
+    use_tactical_shortcuts=False,
+    checkpoint_path: Optional[str] = None,
+    workers: int = 1,
+    main_cpu_threads: Optional[int] = None,
+    worker_cpu_threads: int = 1,
+    seed: int = 42,
+) -> Path:
+    """Generate self-play examples and save as NPZ."""
+    configure_cpu_runtime(main_cpu_threads)
+    n_workers = max(1, int(workers))
+    if str(device).lower() != "cpu" and n_workers > 1:
+        print("[self_play] non-cpu device detected; forcing workers=1 for stability")
+        n_workers = 1
+    if n_workers <= 1 or int(num_games) <= 1:
+        states, policies, values, meta = _run_self_play_games_sequential(
+            model=model,
+            num_games=int(num_games),
+            num_simulations=int(num_simulations),
+            device=device,
+            augment=augment,
+            c_puct=c_puct,
+            add_dirichlet_noise=add_dirichlet_noise,
+            use_tactical_shortcuts=use_tactical_shortcuts,
+            seed=int(seed),
+        )
+        meta["parallel_workers"] = 1
+        meta["main_cpu_threads"] = int(main_cpu_threads or suggest_cpu_plan()["main_threads"])
+        meta["worker_cpu_threads"] = int(worker_cpu_threads)
+        return _save_self_play_npz(states, policies, values, meta, output_dir)
+
+    if not checkpoint_path:
+        raise ValueError(
+            "Parallel self-play requires checkpoint_path so each worker can load the same actor model."
+        )
+
+    games_total = max(0, int(num_games))
+    shard_games = [games_total // n_workers for _ in range(n_workers)]
+    for i in range(games_total % n_workers):
+        shard_games[i] += 1
+    payloads = []
+    for idx, games_i in enumerate(shard_games):
+        if int(games_i) <= 0:
+            continue
+        payloads.append(
+            {
+                "checkpoint_path": checkpoint_path,
+                "num_games": games_i,
+                "num_simulations": int(num_simulations),
+                "device": str(device),
+                "augment": bool(augment),
+                "c_puct": float(c_puct),
+                "add_dirichlet_noise": bool(add_dirichlet_noise),
+                "use_tactical_shortcuts": bool(use_tactical_shortcuts),
+                "worker_cpu_threads": int(worker_cpu_threads),
+                "seed": int(seed) + (idx * 1009) + int(games_i),
+            }
+        )
+
+    plan = suggest_cpu_plan()
+    print(
+        "[self_play] parallel plan total_cpus={cpu} main_threads={main} workers={workers} worker_threads={wt} reserve={reserve}".format(
+            cpu=plan["total_cpus"],
+            main=(main_cpu_threads or plan["main_threads"]),
+            workers=len(payloads),
+            wt=max(1, int(worker_cpu_threads)),
+            reserve=plan["reserve_cores"],
+        )
+    )
+
+    states_parts: List[np.ndarray] = []
+    policies_parts: List[np.ndarray] = []
+    values_parts: List[np.ndarray] = []
+    winner_distribution = {"player1": 0, "player2": 0, "draw": 0}
+    total_examples = 0
+    total_games = 0
+    avg_lengths: List[float] = []
+    with ProcessPoolExecutor(max_workers=len(payloads)) as executor:
+        future_map = {
+            executor.submit(_self_play_worker, payload): idx
+            for idx, payload in enumerate(payloads, start=1)
+        }
+        for future in as_completed(future_map):
+            worker_idx = future_map[future]
+            states_i, policies_i, values_i, meta_i = future.result()
+            states_parts.append(np.asarray(states_i, dtype=np.float32))
+            policies_parts.append(np.asarray(policies_i, dtype=np.float32))
+            values_parts.append(np.asarray(values_i, dtype=np.float32))
+            total_examples += int(np.asarray(states_i).shape[0])
+            total_games += int(meta_i.get("games", 0) or 0)
+            avg_lengths.append(float(meta_i.get("avg_game_length", 0.0) or 0.0))
+            for key, value in dict(meta_i.get("winner_distribution") or {}).items():
+                winner_distribution[str(key)] = winner_distribution.get(str(key), 0) + int(value)
+            print(
+                f"[self_play] worker {worker_idx}/{len(payloads)} done "
+                f"games={int(meta_i.get('games', 0) or 0)} examples={int(np.asarray(states_i).shape[0])}"
+            )
+
+    if states_parts:
+        states = np.concatenate(states_parts, axis=0).astype(np.float32, copy=False)
+        policies = np.concatenate(policies_parts, axis=0).astype(np.float32, copy=False)
+        values = np.concatenate(values_parts, axis=0).astype(np.float32, copy=False)
+    else:
+        states = np.zeros((0, 3, ROWS, COLS), dtype=np.float32)
+        policies = np.zeros((0, COLS), dtype=np.float32)
+        values = np.zeros((0,), dtype=np.float32)
+
+    meta = {
+        "games": int(total_games),
+        "examples": int(total_examples),
+        "simulations": int(num_simulations),
+        "c_puct": float(c_puct),
+        "avg_game_length": float(np.mean(avg_lengths)) if avg_lengths else 0.0,
+        "winner_distribution": winner_distribution,
+        "augment_mirror": bool(augment),
+        "dirichlet_noise": bool(add_dirichlet_noise),
+        "use_tactical_shortcuts": bool(use_tactical_shortcuts),
+        "mcts_target_version": MCTS_TARGET_VERSION,
+        "parallel_workers": int(len(payloads)),
+        "main_cpu_threads": int(main_cpu_threads or plan["main_threads"]),
+        "worker_cpu_threads": int(worker_cpu_threads),
+        "seed": int(seed),
+        "created_at": _utc_now_iso(),
+    }
+    return _save_self_play_npz(states, policies, values, meta, output_dir)
 
 
 def _load_model_for_self_play(checkpoint: Optional[str], device: str) -> Tuple[ConnectXNet, Dict]:
@@ -347,7 +514,16 @@ def _main() -> None:
         default=None,
         help="Optional exact output file path (.npz). If set, generated file is copied to this path.",
     )
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--workers", type=int, default=None)
+    parser.add_argument("--main-cpu-threads", type=int, default=None)
+    parser.add_argument("--worker-cpu-threads", type=int, default=1)
     args = parser.parse_args()
+    plan = suggest_cpu_plan()
+    if args.workers is None:
+        args.workers = int(plan["selfplay_workers"])
+    if args.main_cpu_threads is None:
+        args.main_cpu_threads = int(plan["main_threads"])
 
     model, ckpt_meta = _load_model_for_self_play(args.checkpoint, device=args.device)
     if args.checkpoint:
@@ -375,6 +551,11 @@ def _main() -> None:
         c_puct=float(args.c_puct),
         add_dirichlet_noise=not args.no_dirichlet_noise,
         use_tactical_shortcuts=bool(args.use_tactical_shortcuts),
+        checkpoint_path=args.checkpoint,
+        workers=int(args.workers),
+        main_cpu_threads=args.main_cpu_threads,
+        worker_cpu_threads=int(args.worker_cpu_threads),
+        seed=int(getattr(args, "seed", 42)),
     )
 
     if args.output:

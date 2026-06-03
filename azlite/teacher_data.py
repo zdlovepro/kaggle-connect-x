@@ -11,6 +11,7 @@ teachers (submission/negamax/heuristic/MCTS). Output is a single `.npz` file:
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ProcessPoolExecutor, as_completed
 import json
 import math
 import random
@@ -32,6 +33,7 @@ from azlite.board import (
     to_tensor,
 )
 from azlite.puct_mcts import HeuristicEvaluator, run_mcts
+from azlite.runtime import configure_cpu_runtime, configure_worker_runtime, suggest_cpu_plan
 
 try:
     import submission as _submission
@@ -269,7 +271,7 @@ def _source_roles(source: str, game_index: int) -> Tuple[str, str]:
     return "heuristic", "random"
 
 
-def collect_positions(
+def _collect_positions_with_targets(
     positions: int,
     source_mix: Sequence[Tuple[str, float]],
     ctx: TeacherContext,
@@ -277,12 +279,13 @@ def collect_positions(
     max_state_repeats: int = 1,
     source_sampling_mode: str = "quota",
     max_source_stall_games: int = 128,
+    source_targets: Optional[Mapping[str, int]] = None,
 ) -> List[Tuple[np.ndarray, int, str]]:
     """Collect non-terminal positions from mixed game sources."""
     rng = random.Random(seed)
     out: List[Tuple[np.ndarray, int, str]] = []
     state_counts: Dict[bytes, int] = {}
-    source_targets = _allocate_source_targets(int(positions), source_mix)
+    source_targets = dict(source_targets or _allocate_source_targets(int(positions), source_mix))
     kept_counts: Dict[str, int] = {name: 0 for name in source_targets}
     stalled_games: Dict[str, int] = {name: 0 for name in source_targets}
     games = 0
@@ -355,6 +358,27 @@ def collect_positions(
             )
 
     return out
+
+
+def collect_positions(
+    positions: int,
+    source_mix: Sequence[Tuple[str, float]],
+    ctx: TeacherContext,
+    seed: int = 42,
+    max_state_repeats: int = 1,
+    source_sampling_mode: str = "quota",
+    max_source_stall_games: int = 128,
+) -> List[Tuple[np.ndarray, int, str]]:
+    return _collect_positions_with_targets(
+        positions=positions,
+        source_mix=source_mix,
+        ctx=ctx,
+        seed=seed,
+        max_state_repeats=max_state_repeats,
+        source_sampling_mode=source_sampling_mode,
+        max_source_stall_games=max_source_stall_games,
+        source_targets=None,
+    )
 
 
 def _softmax_on_legal(scores: np.ndarray, legal: Sequence[int], temperature: float) -> np.ndarray:
@@ -625,7 +649,7 @@ def _rollout_outcome_value(
     return 0.0
 
 
-def build_teacher_dataset(
+def _build_teacher_dataset_sequential(
     positions: int,
     teacher: str,
     teacher_depth: int,
@@ -643,6 +667,7 @@ def build_teacher_dataset(
     max_state_repeats: int = 1,
     source_sampling_mode: str = "quota",
     max_source_stall_games: int = 128,
+    source_targets: Optional[Mapping[str, int]] = None,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Dict[str, object]]:
     ctx = TeacherContext(
         teacher_depth=teacher_depth,
@@ -652,7 +677,7 @@ def build_teacher_dataset(
     )
     rng = random.Random(seed)
 
-    sampled = collect_positions(
+    sampled = _collect_positions_with_targets(
         positions=positions,
         source_mix=source_mix,
         ctx=ctx,
@@ -660,6 +685,7 @@ def build_teacher_dataset(
         max_state_repeats=max_state_repeats,
         source_sampling_mode=source_sampling_mode,
         max_source_stall_games=max_source_stall_games,
+        source_targets=source_targets,
     )
 
     states: List[np.ndarray] = []
@@ -747,6 +773,222 @@ def build_teacher_dataset(
     return states_arr, policies_arr, values_arr, metadata
 
 
+def _split_source_targets(source_targets: Mapping[str, int], workers: int) -> List[Dict[str, int]]:
+    n_workers = max(1, int(workers))
+    shards: List[Dict[str, int]] = [{name: 0 for name in source_targets} for _ in range(n_workers)]
+    for name, total in source_targets.items():
+        total_i = max(0, int(total))
+        base = total_i // n_workers
+        rem = total_i % n_workers
+        for idx in range(n_workers):
+            shards[idx][name] = base + (1 if idx < rem else 0)
+    return shards
+
+
+def _teacher_worker_build(payload: Dict[str, object]):
+    configure_worker_runtime(int(payload.get("worker_cpu_threads", 1) or 1))
+    return _build_teacher_dataset_sequential(
+        positions=int(payload["positions"]),
+        teacher=str(payload["teacher"]),
+        teacher_depth=int(payload["teacher_depth"]),
+        policy_mode=str(payload["policy_mode"]),
+        policy_temperature=float(payload["policy_temperature"]),
+        value_mode=str(payload["value_mode"]),
+        value_scale=float(payload["value_scale"]),
+        source_mix=list(payload["source_mix"]),
+        include_legal_channel=bool(payload["include_legal_channel"]),
+        seed=int(payload["seed"]),
+        mcts_sims=int(payload["mcts_sims"]),
+        mcts_time_ms=float(payload["mcts_time_ms"]),
+        negamax_time_ms=float(payload["negamax_time_ms"]),
+        rollout_policy=str(payload["rollout_policy"]),
+        max_state_repeats=int(payload["max_state_repeats"]),
+        source_sampling_mode=str(payload["source_sampling_mode"]),
+        max_source_stall_games=int(payload["max_source_stall_games"]),
+        source_targets=dict(payload["source_targets"]),
+    )
+
+
+def _estimate_state_duplicates(states: np.ndarray) -> int:
+    if states.ndim != 4 or states.shape[0] <= 1:
+        return 0
+    seen: set[bytes] = set()
+    dup = 0
+    for i in range(states.shape[0]):
+        key = np.ascontiguousarray(states[i]).tobytes()
+        if key in seen:
+            dup += 1
+        else:
+            seen.add(key)
+    return dup
+
+
+def build_teacher_dataset(
+    positions: int,
+    teacher: str,
+    teacher_depth: int,
+    policy_mode: str,
+    policy_temperature: float,
+    value_mode: str,
+    value_scale: float,
+    source_mix: Sequence[Tuple[str, float]],
+    include_legal_channel: bool,
+    seed: int,
+    mcts_sims: int,
+    mcts_time_ms: float,
+    negamax_time_ms: float,
+    rollout_policy: str,
+    max_state_repeats: int = 1,
+    source_sampling_mode: str = "quota",
+    max_source_stall_games: int = 128,
+    workers: int = 1,
+    main_cpu_threads: Optional[int] = None,
+    worker_cpu_threads: int = 1,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Dict[str, object]]:
+    configure_cpu_runtime(main_cpu_threads)
+    n_workers = max(1, int(workers))
+    total_positions = max(0, int(positions))
+    if n_workers <= 1 or total_positions <= 0:
+        states_arr, policies_arr, values_arr, metadata = _build_teacher_dataset_sequential(
+            positions=total_positions,
+            teacher=teacher,
+            teacher_depth=teacher_depth,
+            policy_mode=policy_mode,
+            policy_temperature=policy_temperature,
+            value_mode=value_mode,
+            value_scale=value_scale,
+            source_mix=source_mix,
+            include_legal_channel=include_legal_channel,
+            seed=seed,
+            mcts_sims=mcts_sims,
+            mcts_time_ms=mcts_time_ms,
+            negamax_time_ms=negamax_time_ms,
+            rollout_policy=rollout_policy,
+            max_state_repeats=max_state_repeats,
+            source_sampling_mode=source_sampling_mode,
+            max_source_stall_games=max_source_stall_games,
+        )
+        metadata["parallel_workers"] = 1
+        metadata["main_cpu_threads"] = int(main_cpu_threads or suggest_cpu_plan()["main_threads"])
+        metadata["worker_cpu_threads"] = int(worker_cpu_threads)
+        metadata["cross_worker_duplicate_count"] = 0
+        metadata["cross_worker_duplicate_rate"] = 0.0
+        return states_arr, policies_arr, values_arr, metadata
+
+    global_targets = _allocate_source_targets(total_positions, source_mix)
+    shards = _split_source_targets(global_targets, n_workers)
+    payloads: List[Dict[str, object]] = []
+    for idx, shard_targets in enumerate(shards):
+        shard_positions = int(sum(int(v) for v in shard_targets.values()))
+        if shard_positions <= 0:
+            continue
+        payloads.append(
+            {
+                "positions": shard_positions,
+                "teacher": teacher,
+                "teacher_depth": teacher_depth,
+                "policy_mode": policy_mode,
+                "policy_temperature": policy_temperature,
+                "value_mode": value_mode,
+                "value_scale": value_scale,
+                "source_mix": list(source_mix),
+                "include_legal_channel": include_legal_channel,
+                "seed": int(seed) + (idx * 1009),
+                "mcts_sims": mcts_sims,
+                "mcts_time_ms": mcts_time_ms,
+                "negamax_time_ms": negamax_time_ms,
+                "rollout_policy": rollout_policy,
+                "max_state_repeats": max_state_repeats,
+                "source_sampling_mode": source_sampling_mode,
+                "max_source_stall_games": max_source_stall_games,
+                "source_targets": shard_targets,
+                "worker_cpu_threads": worker_cpu_threads,
+            }
+        )
+
+    print(
+        "[teacher_data] parallel plan total_cpus={cpu} main_threads={main} workers={workers} worker_threads={wt} reserve={reserve}".format(
+            cpu=suggest_cpu_plan()["total_cpus"],
+            main=(main_cpu_threads or suggest_cpu_plan()["main_threads"]),
+            workers=len(payloads),
+            wt=max(1, int(worker_cpu_threads)),
+            reserve=suggest_cpu_plan()["reserve_cores"],
+        )
+    )
+
+    states_parts: List[np.ndarray] = []
+    policies_parts: List[np.ndarray] = []
+    values_parts: List[np.ndarray] = []
+    source_counter: Dict[str, int] = {}
+    channels = 0
+    with ProcessPoolExecutor(max_workers=len(payloads)) as executor:
+        future_map = {
+            executor.submit(_teacher_worker_build, payload): idx
+            for idx, payload in enumerate(payloads, start=1)
+        }
+        for future in as_completed(future_map):
+            shard_idx = future_map[future]
+            states_i, policies_i, values_i, meta_i = future.result()
+            states_parts.append(np.asarray(states_i, dtype=np.float32))
+            policies_parts.append(np.asarray(policies_i, dtype=np.float32))
+            values_parts.append(np.asarray(values_i, dtype=np.float32))
+            channels = max(channels, int(meta_i.get("channels", 0) or 0))
+            for name, count in dict(meta_i.get("source_counts") or {}).items():
+                source_counter[str(name)] = source_counter.get(str(name), 0) + int(count)
+            print(
+                f"[teacher_data] worker {shard_idx}/{len(payloads)} done "
+                f"saved={int(np.asarray(states_i).shape[0])}"
+            )
+
+    if states_parts:
+        states_arr = np.concatenate(states_parts, axis=0).astype(np.float32, copy=False)
+        policies_arr = np.concatenate(policies_parts, axis=0).astype(np.float32, copy=False)
+        values_arr = np.concatenate(values_parts, axis=0).astype(np.float32, copy=False)
+    else:
+        channels = 3 if include_legal_channel else 2
+        states_arr = np.zeros((0, channels, ROWS, COLS), dtype=np.float32)
+        policies_arr = np.zeros((0, COLS), dtype=np.float32)
+        values_arr = np.zeros((0,), dtype=np.float32)
+
+    if states_arr.shape[0] > total_positions:
+        states_arr = states_arr[:total_positions]
+        policies_arr = policies_arr[:total_positions]
+        values_arr = values_arr[:total_positions]
+
+    cross_worker_dup = _estimate_state_duplicates(states_arr)
+    metadata = {
+        "teacher_type": teacher,
+        "teacher_depth": int(teacher_depth),
+        "positions_requested": int(total_positions),
+        "positions_saved": int(states_arr.shape[0]),
+        "policy_mode": policy_mode,
+        "policy_temperature": float(policy_temperature),
+        "value_mode": value_mode,
+        "value_scale": float(value_scale),
+        "channels": int(channels if channels > 0 else (states_arr.shape[1] if states_arr.ndim == 4 else 0)),
+        "source_mix": [{"name": n, "weight": float(w)} for n, w in source_mix],
+        "source_targets": global_targets,
+        "source_counts": source_counter,
+        "source_sampling_mode": str(source_sampling_mode),
+        "max_source_stall_games": int(max_source_stall_games),
+        "rollout_policy": rollout_policy,
+        "mcts_sims": int(mcts_sims),
+        "mcts_time_ms": float(mcts_time_ms),
+        "negamax_time_ms": float(negamax_time_ms),
+        "max_state_repeats": int(max_state_repeats),
+        "deduplicated_sampling": bool(int(max_state_repeats) == 1),
+        "parallel_workers": int(len(payloads)),
+        "main_cpu_threads": int(main_cpu_threads or suggest_cpu_plan()["main_threads"]),
+        "worker_cpu_threads": int(worker_cpu_threads),
+        "cross_worker_duplicate_count": int(cross_worker_dup),
+        "cross_worker_duplicate_rate": float(
+            cross_worker_dup / max(1, int(states_arr.shape[0]))
+        ),
+        "created_at": _utc_now_iso(),
+    }
+    return states_arr, policies_arr, values_arr, metadata
+
+
 def save_dataset_npz(
     output: Path,
     states: np.ndarray,
@@ -815,10 +1057,18 @@ def _main() -> None:
         default=1,
         help="Exact board+player repeat cap during teacher sampling. 1 means exact dedup.",
     )
+    parser.add_argument("--workers", type=int, default=None)
+    parser.add_argument("--main-cpu-threads", type=int, default=None)
+    parser.add_argument("--worker-cpu-threads", type=int, default=1)
     parser.add_argument("--no-legal-channel", action="store_true")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--output", type=str, required=True)
     args = parser.parse_args()
+    plan = suggest_cpu_plan()
+    if args.workers is None:
+        args.workers = int(plan["teacher_workers"])
+    if args.main_cpu_threads is None:
+        args.main_cpu_threads = int(plan["main_threads"])
 
     source_mix = parse_source_mix(args.source_mix)
     print("[teacher_data] source mix:", ", ".join(f"{n}:{w:.2f}" for n, w in source_mix))
@@ -843,6 +1093,9 @@ def _main() -> None:
             "quota" if str(args.source_sampling_mode) == "quota" else "game_weighted"
         ),
         max_source_stall_games=int(args.max_source_stall_games),
+        workers=int(args.workers),
+        main_cpu_threads=args.main_cpu_threads,
+        worker_cpu_threads=int(args.worker_cpu_threads),
     )
 
     output = Path(args.output)
@@ -861,6 +1114,10 @@ def _main() -> None:
                 "teacher_depth": metadata["teacher_depth"],
                 "positions_saved": metadata["positions_saved"],
                 "channels": metadata["channels"],
+                "parallel_workers": metadata.get("parallel_workers"),
+                "main_cpu_threads": metadata.get("main_cpu_threads"),
+                "worker_cpu_threads": metadata.get("worker_cpu_threads"),
+                "cross_worker_duplicate_rate": metadata.get("cross_worker_duplicate_rate"),
                 "created_at": metadata["created_at"],
             },
             ensure_ascii=False,

@@ -23,6 +23,7 @@ import numpy as np
 
 from azlite import evaluate as eval_mod
 from azlite import eval_core
+from azlite.runtime import configure_cpu_runtime, suggest_cpu_plan
 from azlite.teacher_data import (
     DEFAULT_SOURCE_MIX,
     build_teacher_dataset,
@@ -899,6 +900,14 @@ def _run_bootstrap(
     git_info: Dict[str, str],
     state: Dict[str, Any],
 ) -> Dict[str, Any]:
+    cpu_plan = suggest_cpu_plan()
+    main_cpu_threads = (
+        int(args.main_cpu_threads)
+        if args.main_cpu_threads is not None
+        else int(cpu_plan["main_threads"])
+    )
+    if str(args.device) == "cpu":
+        configure_cpu_runtime(main_cpu_threads)
     teacher_path = Path(args.teacher_data_path) if args.teacher_data_path else _default_teacher_path(
         paths,
         args.teacher_positions,
@@ -930,6 +939,9 @@ def _run_bootstrap(
             max_state_repeats=int(args.teacher_max_state_repeats),
             source_sampling_mode=str(args.teacher_source_sampling_mode),
             max_source_stall_games=int(args.teacher_max_source_stall_games),
+            workers=int(args.teacher_workers),
+            main_cpu_threads=main_cpu_threads,
+            worker_cpu_threads=int(args.worker_cpu_threads),
         )
         save_dataset_npz(teacher_path, states, policies, values, metadata)
         print(f"[pipeline] bootstrap: teacher data saved {teacher_path.resolve()}")
@@ -1076,6 +1088,12 @@ def _run_selfplay(
         str(float(args.teacher_batch_ratio_end)),
         "--selfplay-actor-mode",
         str(args.selfplay_actor_mode),
+        "--self-play-workers",
+        str(int(args.self_play_workers)),
+        "--main-cpu-threads",
+        str(int(args.main_cpu_threads if args.main_cpu_threads is not None else suggest_cpu_plan()["main_threads"])),
+        "--worker-cpu-threads",
+        str(int(args.worker_cpu_threads)),
         "--device",
         str(args.device),
         "--checkpoint-dir",
@@ -1380,6 +1398,7 @@ def _main() -> None:
     )
     parser.add_argument("--teacher-max-source-stall-games", type=int, default=128)
     parser.add_argument("--teacher-max-state-repeats", type=int, default=1)
+    parser.add_argument("--teacher-workers", type=int, default=None)
     parser.add_argument("--teacher-no-legal-channel", action="store_true")
     parser.add_argument("--teacher-data-path", type=str, default=None)
 
@@ -1435,6 +1454,9 @@ def _main() -> None:
     parser.add_argument("--teacher-batch-ratio-start", type=float, default=0.30)
     parser.add_argument("--teacher-batch-ratio-end", type=float, default=0.05)
     parser.add_argument("--selfplay-actor-mode", choices=("latest", "best", "alternate"), default="alternate")
+    parser.add_argument("--self-play-workers", type=int, default=None)
+    parser.add_argument("--main-cpu-threads", type=int, default=None)
+    parser.add_argument("--worker-cpu-threads", type=int, default=1)
 
     # Paths / outputs.
     parser.add_argument("--checkpoint-dir", type=str, default="checkpoints/azlite_train")
@@ -1443,6 +1465,11 @@ def _main() -> None:
     parser.add_argument("--submission-template", type=str, default=str(ROOT / "submission.py"))
     parser.add_argument("--submission-output", type=str, default=str(ROOT / "submission.py"))
     args = parser.parse_args()
+    cpu_plan = suggest_cpu_plan()
+    if args.teacher_workers is None:
+        args.teacher_workers = int(cpu_plan["teacher_workers"])
+    if args.self_play_workers is None:
+        args.self_play_workers = int(cpu_plan["selfplay_workers"])
 
     paths = _ensure_layout(Path(args.checkpoint_dir))
     git_info = _git_info()
@@ -1453,6 +1480,16 @@ def _main() -> None:
     print(
         f"[pipeline] mode={args.mode} resume={args.resume} "
         f"branch={git_info.get('branch')} commit={git_info.get('commit')}"
+    )
+    print(
+        "[pipeline] cpu plan total={total} main_threads={main} teacher_workers={tw} self_play_workers={sw} worker_threads={wt} reserve={reserve}".format(
+            total=cpu_plan["total_cpus"],
+            main=(args.main_cpu_threads if args.main_cpu_threads is not None else cpu_plan["main_threads"]),
+            tw=int(args.teacher_workers),
+            sw=int(args.self_play_workers),
+            wt=int(args.worker_cpu_threads),
+            reserve=cpu_plan["reserve_cores"],
+        )
     )
 
     try:
