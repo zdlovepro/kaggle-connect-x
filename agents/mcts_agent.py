@@ -98,28 +98,37 @@ class MCTSAgent(BaseAgent):
             b1=b1, b2=b2, heights=heights.copy(), mark=mark,
             unvisited=ordered_legal_moves(board_np),
         )
-        return self._search(root)
+        safety_margin_ms = max(20.0, min(120.0, float(self.time_budget_ms) * 0.1))
+        usable_ms = max(50.0, float(self.time_budget_ms) - safety_margin_ms)
+        deadline = time.perf_counter() + (usable_ms / 1000.0)
+        try:
+            move = self._search(root, deadline=deadline, fallback_valid=valid)
+        except Exception:
+            move = valid[0]
+        if move not in valid:
+            move = valid[0]
+        self.stats["moves_made"] += 1
+        return int(move)
 
-    def _search(self, root):
+    def _search(self, root, deadline: float, fallback_valid: List[int]):
         self.simulations = 0
-        start = time.perf_counter()
 
-        while True:
-            if (time.perf_counter() - start) * 1000 > self.time_budget_ms:
-                break
+        while time.perf_counter() < deadline:
 
             node = self._select(root)
 
             if not node.is_fully_expanded():
                 node = self._expand(node)
 
-            result = self._simulate(node)
+            result = self._simulate(node, deadline=deadline)
+            if result is None:
+                break
             self._backpropagate(node, result)
 
             self.simulations += 1
 
         if not root.children:
-            fallback = self._order_moves(valid_cols(root.heights))
+            fallback = [c for c in self._order_moves(valid_cols(root.heights)) if c in fallback_valid]
             return fallback[0] if fallback else 0
 
         best_action = max(
@@ -129,7 +138,6 @@ class MCTSAgent(BaseAgent):
         )[0]
 
         self.stats["nodes_visited"] = self.simulations
-        self.stats["moves_made"] += 1
         return best_action
 
     def _select(self, node):
@@ -179,7 +187,7 @@ class MCTSAgent(BaseAgent):
         node.children[col] = child
         return child
 
-    def _simulate(self, node):
+    def _simulate(self, node, deadline: float):
         b1 = np.uint64(int(node.b1))
         b2 = np.uint64(int(node.b2))
         heights = node.heights.copy()
@@ -188,6 +196,8 @@ class MCTSAgent(BaseAgent):
         steps = 0
 
         while True:
+            if time.perf_counter() >= deadline:
+                return None
             valid = valid_cols(heights)
             if not valid:
                 return 0.0

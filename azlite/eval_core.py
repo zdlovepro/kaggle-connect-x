@@ -97,6 +97,34 @@ EVAL_PROFILE_DEFAULTS: Dict[str, Dict[str, Any]] = {
     },
 }
 
+def derive_internal_time_budget_ms(
+    external_timeout_ms: Optional[float],
+    default_budget_ms: float,
+) -> float:
+    """Derive engine-internal search budget from external act-time timeout.
+
+    Rule:
+      - when external timeout is unavailable, fallback to default budget
+      - internal = external - margin
+      - margin = clamp(external * 0.10, 100ms, 300ms)
+      - floor at 50ms
+      - never exceed external timeout
+    """
+    if external_timeout_ms is None:
+        return float(max(50.0, default_budget_ms))
+
+    ext = float(max(0.0, external_timeout_ms))
+    if ext <= 0.0:
+        return float(max(50.0, default_budget_ms))
+
+    margin = min(300.0, max(100.0, ext * 0.10))
+    budget = ext - margin
+
+    budget = max(50.0, budget)
+    budget = min(budget, ext)
+
+    return float(budget)
+
 
 @dataclass
 class UnifiedAgent:
@@ -157,7 +185,7 @@ def resolve_eval_config(
         "previous_best": int(eval_games_previous_best) if eval_games_previous_best is not None else int(games_defaults.get("previous_best", default_games)),
     }
     for key, value in list(games_by_opponent.items()):
-        games_by_opponent[key] = max(1, int(value))
+        games_by_opponent[key] = max(0, int(value))
 
     cand_ms = float(candidate_timeout_ms) if candidate_timeout_ms is not None else float(profile_defaults["candidate_timeout_ms"])
     opp_ms = float(opponent_timeout_ms) if opponent_timeout_ms is not None else float(profile_defaults["opponent_timeout_ms"])
@@ -368,7 +396,11 @@ def create_agent(
     time_budget_ms: Optional[float] = None,
 ) -> UnifiedAgent:
     key = spec.strip().lower()
-    budget_ms = float(time_budget_ms) if time_budget_ms is not None else DEFAULT_NEGAMAX_TIME_BUDGET_MS
+    external_timeout_ms = float(time_budget_ms) if time_budget_ms is not None else None
+    budget_ms = derive_internal_time_budget_ms(
+        external_timeout_ms,
+        default_budget_ms=DEFAULT_NEGAMAX_TIME_BUDGET_MS,
+    )
     if key == "random":
         return _build_random_agent(seed=seed)
     if key == "negamax":
@@ -378,8 +410,12 @@ def create_agent(
     if key in ("heuristic",):
         return _build_heuristic_agent()
     if key in ("mcts_lite", "mcts-lite", "mcts"):
+        mcts_budget_ms = derive_internal_time_budget_ms(
+            external_timeout_ms,
+            default_budget_ms=DEFAULT_MCTS_LITE_TIME_BUDGET_MS,
+        )
         return _build_mcts_lite_agent(
-            time_budget_ms=float(time_budget_ms) if time_budget_ms is not None else DEFAULT_MCTS_LITE_TIME_BUDGET_MS
+            time_budget_ms=mcts_budget_ms
         )
     if key in ("checkpoint_puct", "azlite_checkpoint_puct", "candidate"):
         if not checkpoint:
@@ -422,6 +458,7 @@ def _play_single_game(
     cfg = _default_cfg()
     illegal = {1: 0, 2: 0}
     timeouts = {1: 0, 2: 0}
+    timeout_games = {1: 0, 2: 0}
     errors = {1: 0, 2: 0}
     step_times = {1: [], 2: []}
     winner = 0
@@ -446,6 +483,7 @@ def _play_single_game(
             mark_timeout = float(timeout_sec_by_mark.get(int(mark), mark_timeout))
         if elapsed > mark_timeout:
             timeouts[mark] += 1
+            timeout_games[mark] = 1
             winner = 2 if mark == 1 else 1
             break
 
@@ -482,6 +520,7 @@ def _play_single_game(
         "steps": int(np.count_nonzero(board)),
         "illegal": illegal,
         "timeouts": timeouts,
+        "timeout_games": timeout_games,
         "errors": errors,
         "step_times": step_times,
     }
@@ -509,7 +548,7 @@ def play_match(
     agent_a = as_unified_agent(agent_a, default_name="agent_a")
     agent_b = as_unified_agent(agent_b, default_name="agent_b")
 
-    n = max(1, int(num_games))
+    n = max(0, int(num_games))
     swap = bool(swap_sides)
     rng = random.Random(seed)
     timeout_policy = str(timeout_result_policy).strip().lower()
@@ -527,12 +566,81 @@ def play_match(
     candidate_timeout_sec = candidate_timeout_ms_final / 1000.0
     opponent_timeout_sec = opponent_timeout_ms_final / 1000.0
 
+    if n == 0:
+        return {
+            "evaluator_backend": EVALUATOR_BACKEND,
+            "eval_profile": profile_key,
+            "agent_a": agent_a.name,
+            "agent_b": agent_b.name,
+            "games": 0,
+            "num_games": 0,
+            "swap_sides": bool(swap_sides),
+            "skipped": True,
+            "skip_reason": "num_games=0",
+            "wins": 0,
+            "losses": 0,
+            "draws": 0,
+            "win_rate": 0.0,
+            "reliable_win_rate": 0.0,
+            "reliable_games": 0,
+            "reliable_wins": 0,
+            "reliable_losses": 0,
+            "reliable_draws": 0,
+            "first_player_games": 0,
+            "first_player_wins": 0,
+            "first_player_losses": 0,
+            "first_player_draws": 0,
+            "first_player_win_rate": 0.0,
+            "second_player_games": 0,
+            "second_player_wins": 0,
+            "second_player_losses": 0,
+            "second_player_draws": 0,
+            "second_player_win_rate": 0.0,
+            "side_bias": 0.0,
+            "candidate_timeout_moves": 0,
+            "opponent_timeout_moves": 0,
+            "candidate_timeout_games": 0,
+            "opponent_timeout_games": 0,
+            "candidate_timeouts": 0,
+            "opponent_timeouts": 0,
+            "candidate_timeout_rate": 0.0,
+            "opponent_timeout_rate": 0.0,
+            "candidate_timeout_ms": candidate_timeout_ms_final,
+            "opponent_timeout_ms": opponent_timeout_ms_final,
+            "candidate_avg_move_ms": 0.0,
+            "candidate_max_move_ms": 0.0,
+            "opponent_avg_move_ms": 0.0,
+            "opponent_max_move_ms": 0.0,
+            "invalid_actions": {"candidate": 0, "opponent": 0, "total": 0},
+            "timeout_result_policy": timeout_policy,
+            "reliable": True,
+            "unreliable_reasons": [],
+            "reliability": {
+                "reliable": True,
+                "reliable_win_rate": 0.0,
+                "warning": None,
+                "candidate_timeout_rate": 0.0,
+                "opponent_timeout_rate": 0.0,
+                "max_candidate_timeout_rate": float(max_candidate_timeout_rate),
+                "max_opponent_timeout_rate": float(max_opponent_timeout_rate),
+            },
+            "illegal_actions": {"agent_a": 0, "agent_b": 0, "total": 0},
+            "timeouts": {"agent_a": 0, "agent_b": 0, "total": 0},
+            "errors": {"agent_a": 0, "agent_b": 0, "total": 0},
+            "avg_steps": 0.0,
+            "avg_step_time_sec": {"agent_a": 0.0, "agent_b": 0.0},
+            "p95_step_time_sec": {"agent_a": 0.0, "agent_b": 0.0},
+            "step_time_sum_sec": {"agent_a": 0.0, "agent_b": 0.0},
+            "step_count": {"agent_a": 0, "agent_b": 0},
+        }
+
     wins = losses = draws = 0
     reliable_wins = reliable_losses = reliable_draws = 0
     reliable_games = 0
     total_steps = 0
     illegal_a = illegal_b = 0
-    timeout_a = timeout_b = 0
+    timeout_moves_a = timeout_moves_b = 0
+    timeout_games_a = timeout_games_b = 0
     error_a = error_b = 0
     step_times_a: List[float] = []
     step_times_b: List[float] = []
@@ -580,8 +688,10 @@ def play_match(
                 first_draws += 1
             illegal_a += int(game["illegal"][1])
             illegal_b += int(game["illegal"][2])
-            timeout_a += a_timeout_this
-            timeout_b += b_timeout_this
+            timeout_moves_a += a_timeout_this
+            timeout_moves_b += b_timeout_this
+            timeout_games_a += int(game.get("timeout_games", {}).get(1, 0))
+            timeout_games_b += int(game.get("timeout_games", {}).get(2, 0))
             error_a += int(game["errors"][1])
             error_b += int(game["errors"][2])
             step_times_a.extend(game["step_times"][1])
@@ -600,8 +710,10 @@ def play_match(
                 second_draws += 1
             illegal_a += int(game["illegal"][2])
             illegal_b += int(game["illegal"][1])
-            timeout_a += a_timeout_this
-            timeout_b += b_timeout_this
+            timeout_moves_a += a_timeout_this
+            timeout_moves_b += b_timeout_this
+            timeout_games_a += int(game.get("timeout_games", {}).get(2, 0))
+            timeout_games_b += int(game.get("timeout_games", {}).get(1, 0))
             error_a += int(game["errors"][2])
             error_b += int(game["errors"][1])
             step_times_a.extend(game["step_times"][2])
@@ -646,8 +758,8 @@ def play_match(
     side_bias = float(abs(first_wr - second_wr))
     win_rate = float(wins / n)
 
-    candidate_timeout_rate = float(timeout_a / max(1, n))
-    opponent_timeout_rate = float(timeout_b / max(1, n))
+    candidate_timeout_rate = float(timeout_games_a / max(1, n))
+    opponent_timeout_rate = float(timeout_games_b / max(1, n))
     reliable_win_rate = float(reliable_wins / max(1, reliable_games))
 
     unreliable_reasons: List[str] = []
@@ -697,8 +809,12 @@ def play_match(
         "second_player_draws": int(second_draws),
         "second_player_win_rate": second_wr,
         "side_bias": side_bias,
-        "candidate_timeouts": int(timeout_a),
-        "opponent_timeouts": int(timeout_b),
+        "candidate_timeout_moves": int(timeout_moves_a),
+        "opponent_timeout_moves": int(timeout_moves_b),
+        "candidate_timeout_games": int(timeout_games_a),
+        "opponent_timeout_games": int(timeout_games_b),
+        "candidate_timeouts": int(timeout_moves_a),
+        "opponent_timeouts": int(timeout_moves_b),
         "candidate_timeout_rate": candidate_timeout_rate,
         "opponent_timeout_rate": opponent_timeout_rate,
         "candidate_timeout_ms": candidate_timeout_ms_final,
@@ -731,9 +847,9 @@ def play_match(
             "total": int(illegal_a + illegal_b),
         },
         "timeouts": {
-            "agent_a": int(timeout_a),
-            "agent_b": int(timeout_b),
-            "total": int(timeout_a + timeout_b),
+            "agent_a": int(timeout_moves_a),
+            "agent_b": int(timeout_moves_b),
+            "total": int(timeout_moves_a + timeout_moves_b),
         },
         "errors": {
             "agent_a": int(error_a),

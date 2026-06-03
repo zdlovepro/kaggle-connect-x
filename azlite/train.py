@@ -11,6 +11,7 @@ import json
 import math
 import random
 import shutil
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -85,6 +86,10 @@ class EvalResult:
     second_player_draws: int
     second_player_win_rate: float
     side_bias: float = 0.0
+    candidate_timeout_moves: int = 0
+    opponent_timeout_moves: int = 0
+    candidate_timeout_games: int = 0
+    opponent_timeout_games: int = 0
     candidate_timeouts: int = 0
     opponent_timeouts: int = 0
     candidate_invalid_actions: int = 0
@@ -150,7 +155,9 @@ def _evaluate_vs(
     max_opponent_timeout_rate: float = 0.05,
     max_candidate_timeout_rate: float = 0.01,
     timeout_result_policy: str = "fail_eval",
-) -> EvalResult:
+) -> Optional[EvalResult]:
+    if int(games) <= 0:
+        return None
     candidate = eval_core.as_unified_agent(agent_a, default_name="train_candidate")
     if isinstance(agent_b, str):
         opponent = eval_core.create_agent(
@@ -193,6 +200,10 @@ def _evaluate_vs(
         second_player_draws=int(match.get("second_player_draws", 0)),
         second_player_win_rate=float(match.get("second_player_win_rate", 0.0)),
         side_bias=float(match.get("side_bias", 0.0)),
+        candidate_timeout_moves=int(match.get("candidate_timeout_moves", match.get("candidate_timeouts", 0))),
+        opponent_timeout_moves=int(match.get("opponent_timeout_moves", match.get("opponent_timeouts", 0))),
+        candidate_timeout_games=int(match.get("candidate_timeout_games", 0)),
+        opponent_timeout_games=int(match.get("opponent_timeout_games", 0)),
         candidate_timeouts=int(match.get("candidate_timeouts", match["timeouts"]["agent_a"])),
         opponent_timeouts=int(match.get("opponent_timeouts", match["timeouts"]["agent_b"])),
         candidate_invalid_actions=int(invalid.get("candidate", match["illegal_actions"]["agent_a"])),
@@ -218,7 +229,8 @@ def _format_eval(name: str, result: Optional[EvalResult]) -> str:
         f"BIAS={result.side_bias*100:.1f}%"
     )
     msg += (
-        f" TO(cand/opp)={result.candidate_timeouts}/{result.opponent_timeouts} "
+        f" TO_GAME(cand/opp)={result.candidate_timeout_games}/{result.opponent_timeout_games} "
+        f"TO_MOVE(cand/opp)={result.candidate_timeout_moves}/{result.opponent_timeout_moves} "
         f"IL(cand/opp)={result.candidate_invalid_actions}/{result.opponent_invalid_actions} "
         f"TO_RATE(cand/opp)={result.candidate_timeout_rate*100:.1f}%/{result.opponent_timeout_rate*100:.1f}%"
     )
@@ -300,23 +312,102 @@ def _check_policy_targets(states: np.ndarray, policies: np.ndarray, iteration: i
         )
 
 
+def _compute_teacher_batch_ratio(
+    iteration: int,
+    start_iteration: int,
+    end_iteration: int,
+    ratio_start: float,
+    ratio_end: float,
+) -> float:
+    hi = max(0.0, min(1.0, float(ratio_start)))
+    lo = max(0.0, min(1.0, float(ratio_end)))
+    if end_iteration <= start_iteration:
+        return hi
+    progress = (int(iteration) - int(start_iteration)) / max(1, int(end_iteration) - int(start_iteration))
+    progress = max(0.0, min(1.0, float(progress)))
+    return float(hi + (lo - hi) * progress)
+
+
+def _sample_training_batch(
+    teacher_replay: ReplayBuffer,
+    selfplay_replay: ReplayBuffer,
+    batch_size: int,
+    teacher_ratio: float,
+):
+    batch = max(1, int(batch_size))
+    teacher_n = 0
+    selfplay_n = 0
+
+    if len(teacher_replay) > 0 and len(selfplay_replay) > 0:
+        teacher_n = int(round(batch * max(0.0, min(1.0, float(teacher_ratio)))))
+        teacher_n = max(0, min(batch, teacher_n))
+        selfplay_n = batch - teacher_n
+        if selfplay_n <= 0:
+            selfplay_n = 1
+            teacher_n = batch - 1
+        if teacher_n <= 0:
+            teacher_n = 1
+            selfplay_n = batch - 1
+    elif len(selfplay_replay) > 0:
+        selfplay_n = batch
+    elif len(teacher_replay) > 0:
+        teacher_n = batch
+    else:
+        raise ValueError("Both teacher and self-play replay buffers are empty")
+
+    states_parts = []
+    policies_parts = []
+    values_parts = []
+    if teacher_n > 0:
+        s, p, v = teacher_replay.sample_batch(teacher_n)
+        states_parts.append(s)
+        policies_parts.append(p)
+        values_parts.append(v)
+    if selfplay_n > 0:
+        s, p, v = selfplay_replay.sample_batch(selfplay_n)
+        states_parts.append(s)
+        policies_parts.append(p)
+        values_parts.append(v)
+
+    states = np.concatenate(states_parts, axis=0).astype(np.float32, copy=False)
+    policies = np.concatenate(policies_parts, axis=0).astype(np.float32, copy=False)
+    values = np.concatenate(values_parts, axis=0).astype(np.float32, copy=False)
+    order = np.random.permutation(states.shape[0])
+    return (
+        states[order],
+        policies[order],
+        values[order],
+        teacher_n,
+        selfplay_n,
+    )
+
+
 def _train_steps(
     model: ConnectXNet,
     optimizer: torch.optim.Optimizer,
-    replay: ReplayBuffer,
+    teacher_replay: ReplayBuffer,
+    selfplay_replay: ReplayBuffer,
     batch_size: int,
     train_steps: int,
     device: str,
     iteration: int,
+    teacher_batch_ratio: float,
 ) -> Dict[str, float]:
     model.train()
     total_policy = 0.0
     total_value = 0.0
     total_loss = 0.0
     batch_count = 0
+    total_teacher = 0
+    total_selfplay = 0
 
     for step in range(1, int(train_steps) + 1):
-        states, policies, values = replay.sample_batch(batch_size)
+        states, policies, values, teacher_n, selfplay_n = _sample_training_batch(
+            teacher_replay=teacher_replay,
+            selfplay_replay=selfplay_replay,
+            batch_size=batch_size,
+            teacher_ratio=teacher_batch_ratio,
+        )
 
         if np.isnan(values).any():
             raise RuntimeError(f"[iter={iteration} step={step}] value target has NaN")
@@ -358,11 +449,18 @@ def _train_steps(
         total_value += float(value_loss.item())
         total_loss += float(loss.item())
         batch_count += 1
+        total_teacher += int(teacher_n)
+        total_selfplay += int(selfplay_n)
 
     return {
         "policy_loss": total_policy / max(1, batch_count),
         "value_loss": total_value / max(1, batch_count),
         "total_loss": total_loss / max(1, batch_count),
+        "teacher_examples_seen": int(total_teacher),
+        "selfplay_examples_seen": int(total_selfplay),
+        "teacher_batch_ratio_actual": (
+            float(total_teacher) / max(1.0, float(total_teacher + total_selfplay))
+        ),
     }
 
 
@@ -433,12 +531,24 @@ def _should_promote_to_best(
     best_metrics: Dict[str, float],
     previous_best_required: bool = False,
 ) -> Tuple[bool, str, float, Dict[str, object]]:
+    ignore_prev_best_due_side_bias = False
+    prev_bias_note = ""
+    if eval_prev_best is not None and float(eval_prev_best.side_bias) > PREVIOUS_BEST_SIDE_BIAS_THRESHOLD:
+        if abs(float(eval_prev_best.win_rate) - 0.5) <= 0.05:
+            ignore_prev_best_due_side_bias = True
+            prev_bias_note = (
+                "previous-best WR~50% with extreme FP/SP side bias; "
+                "ignored due extreme side bias"
+            )
+    eval_prev_best_for_scoring = None if ignore_prev_best_due_side_bias else eval_prev_best
     composite_details = _build_composite_details(
         eval_random=eval_random,
         eval_negamax=eval_negamax,
         eval_mcts_lite=eval_mcts_lite,
-        eval_prev_best=eval_prev_best,
+        eval_prev_best=eval_prev_best_for_scoring,
     )
+    def _with_bias_note(reason: str) -> str:
+        return f"{reason}; {prev_bias_note}" if prev_bias_note else reason
     score_raw = composite_details.get("score")
     score = float(score_raw) if score_raw is not None else float("nan")
     best_score = float(best_metrics.get("best_composite", -1.0))
@@ -446,40 +556,38 @@ def _should_promote_to_best(
     best_mcts = float(best_metrics.get("best_mcts_lite_win_rate", -1.0))
 
     if bool(composite_details.get("all_key_metrics_unreliable", False)):
-        return False, "all key metrics unreliable/missing", score, composite_details
+        return False, _with_bias_note("all key metrics unreliable/missing"), score, composite_details
 
-    if eval_negamax is None:
-        return False, "missing negamax eval", score, composite_details
-    if not eval_negamax.reliable:
-        return False, "negamax matchup unreliable due opponent timeouts", score, composite_details
+    if eval_negamax is not None and (not eval_negamax.reliable):
+        return False, _with_bias_note("negamax matchup unreliable due opponent timeouts"), score, composite_details
 
     if eval_mcts_lite is not None and (not eval_mcts_lite.reliable):
-        return False, "mcts_lite matchup unreliable due opponent timeouts", score, composite_details
+        return False, _with_bias_note("mcts_lite matchup unreliable due opponent timeouts"), score, composite_details
 
-    if previous_best_required and eval_prev_best is None:
-        return False, "previous-best comparison missing", score, composite_details
+    if previous_best_required and eval_prev_best_for_scoring is None and (not ignore_prev_best_due_side_bias):
+        return False, _with_bias_note("previous-best comparison missing"), score, composite_details
 
     # Guardrails: random is only sanity-check; rely on stronger opponents.
-    if eval_prev_best is not None and eval_prev_best.win_rate < 0.5:
-        return False, "failed vs previous best (<50%)", score, composite_details
-    if eval_prev_best is not None and (not eval_prev_best.reliable):
-        return False, "previous-best matchup unreliable due opponent timeouts", score, composite_details
-    if eval_prev_best is not None and float(eval_prev_best.side_bias) > PREVIOUS_BEST_SIDE_BIAS_THRESHOLD:
+    if eval_prev_best_for_scoring is not None and eval_prev_best_for_scoring.win_rate < 0.5:
+        return False, _with_bias_note("failed vs previous best (<50%)"), score, composite_details
+    if eval_prev_best_for_scoring is not None and (not eval_prev_best_for_scoring.reliable):
+        return False, _with_bias_note("previous-best matchup unreliable due opponent timeouts"), score, composite_details
+    if eval_prev_best_for_scoring is not None and float(eval_prev_best_for_scoring.side_bias) > PREVIOUS_BEST_SIDE_BIAS_THRESHOLD:
         return (
             False,
-            "previous-best eval unstable due first/second-player side bias; require more games",
+            _with_bias_note("previous-best eval unstable due first/second-player side bias; require more games"),
             score,
             composite_details,
         )
-    if best_negamax >= 0.0 and eval_negamax.win_rate + 1e-9 < (best_negamax - 0.03):
-        return False, "negamax regressed too much", score, composite_details
+    if eval_negamax is not None and best_negamax >= 0.0 and eval_negamax.win_rate + 1e-9 < (best_negamax - 0.03):
+        return False, _with_bias_note("negamax regressed too much"), score, composite_details
     if eval_mcts_lite is not None and best_mcts >= 0.0 and eval_mcts_lite.win_rate + 1e-9 < (best_mcts - 0.03):
-        return False, "mcts_lite regressed too much", score, composite_details
+        return False, _with_bias_note("mcts_lite regressed too much"), score, composite_details
     if math.isnan(score):
-        return False, "composite unavailable (no reliable component)", score, composite_details
+        return False, _with_bias_note("composite unavailable (no reliable component)"), score, composite_details
     if score <= best_score + 1e-9:
-        return False, "composite score not improved", score, composite_details
-    return True, "composite improved with stability checks", score, composite_details
+        return False, _with_bias_note("composite score not improved"), score, composite_details
+    return True, _with_bias_note("composite improved with stability checks"), score, composite_details
 
 
 def _load_train_state(state_path: Path) -> Dict[str, object]:
@@ -505,6 +613,26 @@ def _parse_teacher_data_list(spec: Optional[str]) -> list[str]:
 def _load_selfplay_metadata(npz_path: Path) -> Dict[str, object]:
     data = np.load(str(npz_path), allow_pickle=True)
     return _parse_metadata(data["metadata"] if "metadata" in data else None)
+
+
+def _legacy_teacher_data_reasons(npz_path: Path) -> list[str]:
+    meta = _load_selfplay_metadata(npz_path)
+    reasons: list[str] = []
+    if not meta:
+        reasons.append("missing metadata")
+        return reasons
+    if str(meta.get("value_mode", "")) == "score":
+        reasons.append("legacy score-valued teacher labels")
+    max_state_repeats = meta.get("max_state_repeats")
+    if max_state_repeats is None:
+        reasons.append("missing deduplicated-sampling metadata")
+    else:
+        try:
+            if int(max_state_repeats) > 1:
+                reasons.append(f"max_state_repeats={int(max_state_repeats)}")
+        except Exception:
+            reasons.append(f"invalid max_state_repeats={max_state_repeats}")
+    return reasons
 
 
 def _main() -> None:
@@ -556,6 +684,23 @@ def _main() -> None:
         default=2,
         help="Evaluate vs mcts_lite every N eval rounds (1 means every round).",
     )
+    parser.add_argument(
+        "--teacher-batch-ratio-start",
+        type=float,
+        default=0.25,
+        help="Teacher sample ratio at the start of training when teacher data is present.",
+    )
+    parser.add_argument(
+        "--teacher-batch-ratio-end",
+        type=float,
+        default=0.10,
+        help="Teacher sample ratio near the end of training when teacher data is present.",
+    )
+    parser.add_argument(
+        "--allow-legacy-teacher-data",
+        action="store_true",
+        help="Allow loading older teacher NPZ files even if metadata indicates legacy labels or no deduplicated sampling.",
+    )
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
@@ -601,6 +746,7 @@ def _main() -> None:
     best_iteration = int(state.get("best_iteration", 0) or 0)
     previous_best_checkpoint = str(state.get("previous_best_checkpoint", "") or "")
     archived_best_checkpoint = str(state.get("archived_best_checkpoint", "") or "")
+    teacher_paths = _parse_teacher_data_list(args.teacher_data)
 
     # 1) Load model + optimizer
     if args.resume and latest_ckpt_path.exists():
@@ -620,16 +766,47 @@ def _main() -> None:
         print("[train] initialized new model")
     del ckpt_meta
 
-    # 2) Load replay buffer
-    replay = ReplayBuffer(max_size=int(args.buffer_size))
+    # 2) Load replay buffers
+    teacher_replay = ReplayBuffer(max_size=max(1_000_000, int(args.buffer_size)))
+    selfplay_replay = ReplayBuffer(max_size=int(args.buffer_size))
     if args.resume and replay_path.exists():
-        replay.load(replay_path)
-        print(f"[train] resumed replay buffer: size={len(replay)}")
+        replay_meta = _load_selfplay_metadata(replay_path)
+        replay_kind = str(replay_meta.get("buffer_kind", "") or "")
+        if replay_kind == "selfplay_only":
+            selfplay_replay.load(replay_path)
+            print(f"[train] resumed self-play replay buffer: size={len(selfplay_replay)}")
+        elif teacher_paths:
+            print(
+                "[train] legacy replay buffer detected; skipping resume load because teacher data "
+                "will be reloaded separately and old combined replay would double-count teacher samples"
+            )
+        else:
+            selfplay_replay.load(replay_path)
+            print(
+                "[train] WARNING resumed legacy replay buffer without teacher/source metadata; "
+                f"size={len(selfplay_replay)}"
+            )
 
-    teacher_paths = _parse_teacher_data_list(args.teacher_data)
     for td in teacher_paths:
-        added = replay.add_npz(td)
-        print(f"[train] loaded teacher data: {td}  added={added}  buffer={len(replay)}")
+        td_path = Path(td)
+        legacy_reasons = _legacy_teacher_data_reasons(td_path)
+        if legacy_reasons and (not bool(args.allow_legacy_teacher_data)):
+            print(
+                "[train] skipping legacy teacher data: {path}  reasons={reasons}".format(
+                    path=td_path,
+                    reasons="; ".join(legacy_reasons),
+                )
+            )
+            continue
+        if legacy_reasons:
+            print(
+                "[train] WARNING loading legacy teacher data: {path}  reasons={reasons}".format(
+                    path=td_path,
+                    reasons="; ".join(legacy_reasons),
+                )
+            )
+        added = teacher_replay.add_npz(td_path)
+        print(f"[train] loaded teacher data: {td_path}  added={added}  teacher_buffer={len(teacher_replay)}")
 
     start_iteration = 1
     if args.resume:
@@ -641,6 +818,14 @@ def _main() -> None:
         f"[train] iterations {start_iteration} -> {end_iteration}, "
         f"self_play_games={args.self_play_games}, sims={args.simulations}, "
         f"batch={args.batch_size}, train_steps={args.train_steps}"
+    )
+    print(
+        "[train] teacher buffer={tb} selfplay buffer={sb} teacher_batch_ratio(start/end)={ts:.2f}/{te:.2f}".format(
+            tb=len(teacher_replay),
+            sb=len(selfplay_replay),
+            ts=float(args.teacher_batch_ratio_start),
+            te=float(args.teacher_batch_ratio_end),
+        )
     )
     print(f"[train] evaluator_backend={eval_core.EVALUATOR_BACKEND}")
     print(
@@ -655,6 +840,33 @@ def _main() -> None:
             gp=eval_core.games_for_opponent(eval_cfg, "previous_best"),
         )
     )
+    candidate_internal_budget_negamax_ms = eval_core.derive_internal_time_budget_ms(
+        float(eval_cfg["candidate_timeout_ms"]),
+        default_budget_ms=eval_core.DEFAULT_NEGAMAX_TIME_BUDGET_MS,
+    )
+    candidate_internal_budget_mcts_ms = eval_core.derive_internal_time_budget_ms(
+        float(eval_cfg["candidate_timeout_ms"]),
+        default_budget_ms=eval_core.DEFAULT_MCTS_LITE_TIME_BUDGET_MS,
+    )
+    opponent_internal_budget_negamax_ms = eval_core.derive_internal_time_budget_ms(
+        float(eval_cfg["opponent_timeout_ms"]),
+        default_budget_ms=eval_core.DEFAULT_NEGAMAX_TIME_BUDGET_MS,
+    )
+    opponent_internal_budget_mcts_ms = eval_core.derive_internal_time_budget_ms(
+        float(eval_cfg["opponent_timeout_ms"]),
+        default_budget_ms=eval_core.DEFAULT_MCTS_LITE_TIME_BUDGET_MS,
+    )
+    print(
+        "[train] budget candidate(ext/internal negamax/mcts)={ce:.0f}/{cni:.0f}/{cmi:.0f}ms "
+        "opponent(ext/internal negamax/mcts)={oe:.0f}/{oni:.0f}/{omi:.0f}ms".format(
+            ce=float(eval_cfg["candidate_timeout_ms"]),
+            cni=float(candidate_internal_budget_negamax_ms),
+            cmi=float(candidate_internal_budget_mcts_ms),
+            oe=float(eval_cfg["opponent_timeout_ms"]),
+            oni=float(opponent_internal_budget_negamax_ms),
+            omi=float(opponent_internal_budget_mcts_ms),
+        )
+    )
 
     for iteration in range(start_iteration, end_iteration + 1):
         print("\n" + "=" * 72)
@@ -662,9 +874,22 @@ def _main() -> None:
         print("=" * 72)
 
         # 2) generate self-play games
-        model.eval()
+        actor_model = model
+        actor_source = "latest"
+        if best_ckpt_path.exists():
+            actor_model, _, _ = _load_model_and_optimizer(
+                best_ckpt_path,
+                device=device,
+                lr=float(args.lr),
+            )
+            actor_model.eval()
+            actor_source = "best"
+        else:
+            model.eval()
+
+        selfplay_t0 = time.perf_counter()
         selfplay_npz = generate_self_play_games(
-            model=model,
+            model=actor_model,
             num_games=int(args.self_play_games),
             num_simulations=int(args.simulations),
             device=device,
@@ -674,27 +899,43 @@ def _main() -> None:
             add_dirichlet_noise=True,
             use_tactical_shortcuts=False,
         )
+        selfplay_sec = time.perf_counter() - selfplay_t0
         selfplay_meta = _load_selfplay_metadata(selfplay_npz)
         avg_game_length = float(selfplay_meta.get("avg_game_length", 0.0))
         winner_distribution = selfplay_meta.get("winner_distribution", {})
 
         # 3) add to replay buffer
-        added = replay.add_npz(selfplay_npz)
-        print(f"[train] self-play added={added}, buffer size={len(replay)}")
+        added = selfplay_replay.add_npz(selfplay_npz)
+        total_buffer = len(teacher_replay) + len(selfplay_replay)
+        print(
+            f"[train] self-play actor={actor_source} added={added}, "
+            f"teacher_buffer={len(teacher_replay)} selfplay_buffer={len(selfplay_replay)} total_buffer={total_buffer}"
+        )
 
-        if len(replay) == 0:
-            raise RuntimeError("Replay buffer is empty after self-play generation")
+        if total_buffer == 0:
+            raise RuntimeError("Training buffers are empty after self-play generation")
 
         # 4) train
+        teacher_batch_ratio = _compute_teacher_batch_ratio(
+            iteration=iteration,
+            start_iteration=start_iteration,
+            end_iteration=end_iteration,
+            ratio_start=float(args.teacher_batch_ratio_start),
+            ratio_end=float(args.teacher_batch_ratio_end),
+        )
+        train_t0 = time.perf_counter()
         metrics = _train_steps(
             model=model,
             optimizer=optimizer,
-            replay=replay,
+            teacher_replay=teacher_replay,
+            selfplay_replay=selfplay_replay,
             batch_size=int(args.batch_size),
             train_steps=int(args.train_steps),
             device=device,
             iteration=iteration,
+            teacher_batch_ratio=teacher_batch_ratio,
         )
+        train_sec = time.perf_counter() - train_t0
 
         # 5) save latest checkpoint + replay snapshot
         latest_meta = {
@@ -707,14 +948,27 @@ def _main() -> None:
             "opponent_timeout_ms": float(eval_cfg["opponent_timeout_ms"]),
             "previous_best_checkpoint": previous_best_checkpoint,
             "archived_best_checkpoint": archived_best_checkpoint,
-            "buffer_size": int(len(replay)),
+            "teacher_buffer_size": int(len(teacher_replay)),
+            "selfplay_buffer_size": int(len(selfplay_replay)),
+            "buffer_size": int(len(teacher_replay) + len(selfplay_replay)),
+            "teacher_batch_ratio": float(teacher_batch_ratio),
             "loss": metrics,
             "self_play_avg_game_length": avg_game_length,
             "self_play_winner_distribution": winner_distribution,
+            "self_play_actor_source": actor_source,
+            "self_play_seconds": float(selfplay_sec),
+            "train_seconds": float(train_sec),
             "created_at": _utc_now_iso(),
         }
         save_checkpoint(model, optimizer, latest_ckpt_path, metadata=latest_meta)
-        replay.save(replay_path)
+        selfplay_replay.save(
+            replay_path,
+            metadata_extra={
+                "buffer_kind": "selfplay_only",
+                "teacher_buffer_size": int(len(teacher_replay)),
+                "selfplay_buffer_size": int(len(selfplay_replay)),
+            },
+        )
 
         eval_random = None
         eval_negamax = None
@@ -725,47 +979,56 @@ def _main() -> None:
         composite = float("nan")
         composite_details: Dict[str, object] = {}
         previous_best_required = False
+        eval_sec = 0.0
 
         # 6) quick evaluation
         if int(args.eval_interval) > 0 and (iteration % int(args.eval_interval) == 0):
             model.eval()
+            eval_t0 = time.perf_counter()
             current_agent = _mcts_model_agent(model, device=device, simulations=int(args.simulations))
-            eval_random = _evaluate_vs(
-                current_agent,
-                "random",
-                games=eval_core.games_for_opponent(eval_cfg, "random"),
-                seed=int(args.seed) + iteration * 100 + 1,
-                simulations=int(args.simulations),
-                device=device,
-                candidate_timeout_ms=float(eval_cfg["candidate_timeout_ms"]),
-                opponent_timeout_ms=float(eval_cfg["opponent_timeout_ms"]),
-                eval_profile=str(eval_cfg["eval_profile"]),
-                opponent_time_budget_ms=float(eval_cfg["opponent_timeout_ms"]),
-                max_opponent_timeout_rate=float(args.max_opponent_timeout_rate),
-                max_candidate_timeout_rate=float(args.max_candidate_timeout_rate),
-                timeout_result_policy=str(args.timeout_result_policy),
-            )
-            eval_negamax = _evaluate_vs(
-                current_agent,
-                "negamax",
-                games=eval_core.games_for_opponent(eval_cfg, "negamax"),
-                seed=int(args.seed) + iteration * 100 + 2,
-                simulations=int(args.simulations),
-                device=device,
-                candidate_timeout_ms=float(eval_cfg["candidate_timeout_ms"]),
-                opponent_timeout_ms=float(eval_cfg["opponent_timeout_ms"]),
-                eval_profile=str(eval_cfg["eval_profile"]),
-                opponent_time_budget_ms=float(eval_cfg["opponent_timeout_ms"]),
-                max_opponent_timeout_rate=float(args.max_opponent_timeout_rate),
-                max_candidate_timeout_rate=float(args.max_candidate_timeout_rate),
-                timeout_result_policy=str(args.timeout_result_policy),
-            )
+            random_games = eval_core.games_for_opponent(eval_cfg, "random")
+            negamax_games = eval_core.games_for_opponent(eval_cfg, "negamax")
+            mcts_games = eval_core.games_for_opponent(eval_cfg, "mcts_lite")
+            prev_best_games = eval_core.games_for_opponent(eval_cfg, "previous_best")
+
+            if random_games > 0:
+                eval_random = _evaluate_vs(
+                    current_agent,
+                    "random",
+                    games=int(random_games),
+                    seed=int(args.seed) + iteration * 100 + 1,
+                    simulations=int(args.simulations),
+                    device=device,
+                    candidate_timeout_ms=float(eval_cfg["candidate_timeout_ms"]),
+                    opponent_timeout_ms=float(eval_cfg["opponent_timeout_ms"]),
+                    eval_profile=str(eval_cfg["eval_profile"]),
+                    opponent_time_budget_ms=float(eval_cfg["opponent_timeout_ms"]),
+                    max_opponent_timeout_rate=float(args.max_opponent_timeout_rate),
+                    max_candidate_timeout_rate=float(args.max_candidate_timeout_rate),
+                    timeout_result_policy=str(args.timeout_result_policy),
+                )
+            if negamax_games > 0:
+                eval_negamax = _evaluate_vs(
+                    current_agent,
+                    "negamax",
+                    games=int(negamax_games),
+                    seed=int(args.seed) + iteration * 100 + 2,
+                    simulations=int(args.simulations),
+                    device=device,
+                    candidate_timeout_ms=float(eval_cfg["candidate_timeout_ms"]),
+                    opponent_timeout_ms=float(eval_cfg["opponent_timeout_ms"]),
+                    eval_profile=str(eval_cfg["eval_profile"]),
+                    opponent_time_budget_ms=float(eval_cfg["opponent_timeout_ms"]),
+                    max_opponent_timeout_rate=float(args.max_opponent_timeout_rate),
+                    max_candidate_timeout_rate=float(args.max_candidate_timeout_rate),
+                    timeout_result_policy=str(args.timeout_result_policy),
+                )
             mcts_every = max(1, int(args.eval_mcts_lite_every))
-            if iteration % mcts_every == 0:
+            if mcts_games > 0 and iteration % mcts_every == 0:
                 eval_mcts_lite = _evaluate_vs(
                     current_agent,
                     "mcts_lite",
-                    games=eval_core.games_for_opponent(eval_cfg, "mcts_lite"),
+                    games=int(mcts_games),
                     seed=int(args.seed) + iteration * 100 + 4,
                     simulations=int(args.simulations),
                     device=device,
@@ -779,29 +1042,30 @@ def _main() -> None:
                 )
 
             if best_ckpt_path.exists():
-                previous_best_required = True
+                previous_best_required = bool(prev_best_games > 0)
                 snapshot_name = f"previous_best_snapshot_iter{int(iteration):04d}.pt"
                 snapshot_path = archived_best_dir / snapshot_name
                 shutil.copy2(best_ckpt_path, snapshot_path)
                 previous_best_checkpoint = str(snapshot_path.resolve())
                 archived_best_checkpoint = previous_best_checkpoint
 
-                best_model, _, _ = _load_model_and_optimizer(snapshot_path, device=device, lr=float(args.lr))
-                best_agent = _mcts_model_agent(best_model, device=device, simulations=int(args.simulations))
-                eval_prev_best = _evaluate_vs(
-                    current_agent,
-                    best_agent,
-                    games=max(8, eval_core.games_for_opponent(eval_cfg, "previous_best")),
-                    seed=int(args.seed) + iteration * 100 + 3,
-                    simulations=int(args.simulations),
-                    device=device,
-                    candidate_timeout_ms=float(eval_cfg["candidate_timeout_ms"]),
-                    opponent_timeout_ms=float(eval_cfg["opponent_timeout_ms"]),
-                    eval_profile=str(eval_cfg["eval_profile"]),
-                    max_opponent_timeout_rate=float(args.max_opponent_timeout_rate),
-                    max_candidate_timeout_rate=float(args.max_candidate_timeout_rate),
-                    timeout_result_policy=str(args.timeout_result_policy),
-                )
+                if prev_best_games > 0:
+                    best_model, _, _ = _load_model_and_optimizer(snapshot_path, device=device, lr=float(args.lr))
+                    best_agent = _mcts_model_agent(best_model, device=device, simulations=int(args.simulations))
+                    eval_prev_best = _evaluate_vs(
+                        current_agent,
+                        best_agent,
+                        games=int(prev_best_games),
+                        seed=int(args.seed) + iteration * 100 + 3,
+                        simulations=int(args.simulations),
+                        device=device,
+                        candidate_timeout_ms=float(eval_cfg["candidate_timeout_ms"]),
+                        opponent_timeout_ms=float(eval_cfg["opponent_timeout_ms"]),
+                        eval_profile=str(eval_cfg["eval_profile"]),
+                        max_opponent_timeout_rate=float(args.max_opponent_timeout_rate),
+                        max_candidate_timeout_rate=float(args.max_candidate_timeout_rate),
+                        timeout_result_policy=str(args.timeout_result_policy),
+                    )
 
             # 7) gating for best checkpoint
             gate_passed, gate_reason, composite, composite_details = _should_promote_to_best(
@@ -812,6 +1076,7 @@ def _main() -> None:
                 best_metrics=best_metrics,
                 previous_best_required=previous_best_required,
             )
+            eval_sec = time.perf_counter() - eval_t0
             if gate_passed:
                 best_meta = dict(latest_meta)
                 best_meta["eval_results"] = {
@@ -819,8 +1084,8 @@ def _main() -> None:
                     "eval_profile": str(eval_cfg["eval_profile"]),
                     "candidate_timeout_ms": float(eval_cfg["candidate_timeout_ms"]),
                     "opponent_timeout_ms": float(eval_cfg["opponent_timeout_ms"]),
-                    "random": eval_random.__dict__,
-                    "negamax": eval_negamax.__dict__,
+                    "random": eval_random.__dict__ if eval_random else None,
+                    "negamax": eval_negamax.__dict__ if eval_negamax else None,
                     "mcts_lite": eval_mcts_lite.__dict__ if eval_mcts_lite else None,
                     "previous_best": eval_prev_best.__dict__ if eval_prev_best else None,
                     "previous_best_checkpoint": previous_best_checkpoint,
@@ -838,7 +1103,8 @@ def _main() -> None:
                 }
                 save_checkpoint(model, optimizer, best_ckpt_path, metadata=best_meta)
                 best_metrics["best_composite"] = float(composite)
-                best_metrics["best_negamax_win_rate"] = float(eval_negamax.win_rate)
+                if eval_negamax is not None:
+                    best_metrics["best_negamax_win_rate"] = float(eval_negamax.win_rate)
                 if eval_mcts_lite is not None:
                     best_metrics["best_mcts_lite_win_rate"] = float(eval_mcts_lite.win_rate)
                 best_composite_details = composite_details
@@ -847,20 +1113,27 @@ def _main() -> None:
         # 5/6/7 logs
         print(
             f"[train] iteration={iteration} "
-            f"buffer={len(replay)} "
+            f"teacher_buffer={len(teacher_replay)} "
+            f"selfplay_buffer={len(selfplay_replay)} "
+            f"buffer={len(teacher_replay) + len(selfplay_replay)} "
             f"policy_loss={metrics['policy_loss']:.4f} "
             f"value_loss={metrics['value_loss']:.4f} "
             f"total_loss={metrics['total_loss']:.4f}"
         )
         print(
             f"[train] self-play avg_game_length={avg_game_length:.2f} "
-            f"winner_distribution={winner_distribution}"
+            f"winner_distribution={winner_distribution} "
+            f"actor={actor_source} teacher_batch_ratio={teacher_batch_ratio:.3f} "
+            f"batch_mix(actual teacher/selfplay)={metrics['teacher_examples_seen']}/{metrics['selfplay_examples_seen']}"
+        )
+        print(
+            f"[train] stage_time_sec selfplay={selfplay_sec:.1f} train={train_sec:.1f} eval={eval_sec:.1f}"
         )
         print("[train] " + _format_eval("eval vs random", eval_random))
         print("[train] " + _format_eval("eval vs negamax", eval_negamax))
         print("[train] " + _format_eval("eval vs mcts_lite", eval_mcts_lite))
         print("[train] " + _format_eval("eval vs previous best", eval_prev_best))
-        if eval_random is not None:
+        if any(x is not None for x in (eval_random, eval_negamax, eval_mcts_lite, eval_prev_best)):
             print(
                 f"[train] gating passed={gate_passed} "
                 f"reason={gate_reason} "
@@ -871,7 +1144,7 @@ def _main() -> None:
             print(f"[train] best checkpoint:   {best_ckpt_path.resolve()}")
 
         latest_composite = None
-        if eval_random is not None and (not math.isnan(float(composite))):
+        if not math.isnan(float(composite)):
             latest_composite = float(composite)
         latest_negamax_win_rate = float(eval_negamax.win_rate) if eval_negamax is not None else None
 
@@ -906,7 +1179,12 @@ def _main() -> None:
                 "opponent_timeout_ms": float(eval_cfg["opponent_timeout_ms"]),
                 "eval_games_by_opponent": dict(eval_cfg.get("games_by_opponent", {})),
                 "eval_mcts_lite_every": int(args.eval_mcts_lite_every),
-                "buffer_size": int(len(replay)),
+                "teacher_buffer_size": int(len(teacher_replay)),
+                "selfplay_buffer_size": int(len(selfplay_replay)),
+                "buffer_size": int(len(teacher_replay) + len(selfplay_replay)),
+                "teacher_batch_ratio_start": float(args.teacher_batch_ratio_start),
+                "teacher_batch_ratio_end": float(args.teacher_batch_ratio_end),
+                "teacher_batch_ratio_current": float(teacher_batch_ratio),
                 "updated_at": _utc_now_iso(),
             }
         )

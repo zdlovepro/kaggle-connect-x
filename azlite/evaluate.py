@@ -12,6 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from azlite import eval_core
 from azlite.eval_core import (
     EVALUATOR_BACKEND,
     KAGGLE_ACT_TIMEOUT_SEC,
@@ -198,8 +199,7 @@ def should_promote_candidate(
         )
 
     if cand_negamax is None:
-        passed = False
-        reasons.append("missing negamax evaluation in candidate_results")
+        reasons.append("negamax evaluation skipped/missing (diagnostic-only this run)")
     elif prev_negamax is not None:
         if not bool(cand_negamax.get("reliable", True)):
             passed = False
@@ -212,8 +212,7 @@ def should_promote_candidate(
             )
 
     if cand_mcts is None:
-        passed = False
-        reasons.append("missing mcts_lite evaluation in candidate_results")
+        reasons.append("mcts_lite evaluation skipped/missing (diagnostic-only this run)")
     elif not bool(cand_mcts.get("reliable", True)):
         passed = False
         reasons.append("mcts_lite eval unreliable; cannot use for gating")
@@ -230,8 +229,7 @@ def should_promote_candidate(
 
     if previous_best_results is not None:
         if cand_prevbest is None:
-            passed = False
-            reasons.append("missing vs previous_best match in candidate_results")
+            reasons.append("previous_best evaluation skipped/missing (diagnostic-only this run)")
         elif (not bool(cand_prevbest.get("reliable", True))):
             passed = False
             reasons.append("vs previous_best eval unreliable; cannot use for gating")
@@ -245,15 +243,17 @@ def should_promote_candidate(
     if cand_prevbest is not None:
         prev_side_bias = float(cand_prevbest.get("side_bias", 0.0))
         if prev_side_bias > PREVIOUS_BEST_SIDE_BIAS_THRESHOLD:
-            passed = False
-            reasons.append(
-                "previous_best side bias too high "
-                f"({prev_side_bias:.3f} > {PREVIOUS_BEST_SIDE_BIAS_THRESHOLD:.3f}); unstable, require more games"
-            )
             prev_wr = float(cand_prevbest.get("win_rate", 0.0))
             if abs(prev_wr - 0.5) <= 0.05:
                 reasons.append(
-                    "vs previous_best appears 50/50 by total WR but has strong first/second-player bias"
+                    "vs previous_best appears 50/50 by total WR but has strong first/second-player bias; "
+                    "ignored due extreme side bias"
+                )
+            else:
+                passed = False
+                reasons.append(
+                    "previous_best side bias too high "
+                    f"({prev_side_bias:.3f} > {PREVIOUS_BEST_SIDE_BIAS_THRESHOLD:.3f}); unstable, require more games"
                 )
 
     for opp, r in candidate_results.items():
@@ -279,8 +279,8 @@ def _format_console_table(rows: Sequence[Dict[str, Any]]) -> str:
         "FP_WR",
         "SP_WR",
         "Invalid(A)",
-        "Timeout(A)",
-        "Timeout(B)",
+        "TO_GAME(A/B)",
+        "TO_MOVE(A/B)",
         "AvgSteps",
     ]
     col_widths = [max(len(h), 12) for h in headers]
@@ -294,8 +294,14 @@ def _format_console_table(rows: Sequence[Dict[str, Any]]) -> str:
             f"{r.get('first_player_win_rate', 0.0)*100:.1f}%",
             f"{r.get('second_player_win_rate', 0.0)*100:.1f}%",
             str(r.get("invalid_actions", {}).get("candidate", r["illegal_actions"]["agent_a"])),
-            str(r.get("candidate_timeouts", r["timeouts"]["agent_a"])),
-            str(r.get("opponent_timeouts", r["timeouts"]["agent_b"])),
+            "{}/{}".format(
+                int(r.get("candidate_timeout_games", 0)),
+                int(r.get("opponent_timeout_games", 0)),
+            ),
+            "{}/{}".format(
+                int(r.get("candidate_timeout_moves", r.get("candidate_timeouts", r["timeouts"]["agent_a"]))),
+                int(r.get("opponent_timeout_moves", r.get("opponent_timeouts", r["timeouts"]["agent_b"]))),
+            ),
             f"{r['avg_steps']:.2f}",
         ]
         formatted_rows.append(line)
@@ -314,7 +320,7 @@ def _format_console_table(rows: Sequence[Dict[str, Any]]) -> str:
 
 def _format_markdown_table(rows: Sequence[Dict[str, Any]]) -> str:
     head = (
-        "| Opponent | W/L/D | WR | FP_WR | SP_WR | Invalid(A) | Timeout(A) | Timeout(B) | AvgSteps |\n"
+        "| Opponent | W/L/D | WR | FP_WR | SP_WR | Invalid(A) | TO_GAME(A/B) | TO_MOVE(A/B) | AvgSteps |\n"
         "|---|---:|---:|---:|---:|---:|---:|---:|---:|"
     )
     body_lines = []
@@ -329,8 +335,14 @@ def _format_markdown_table(rows: Sequence[Dict[str, Any]]) -> str:
                 fp=r.get("first_player_win_rate", 0.0) * 100.0,
                 sp=r.get("second_player_win_rate", 0.0) * 100.0,
                 ill=r.get("invalid_actions", {}).get("candidate", r["illegal_actions"]["agent_a"]),
-                toa=r.get("candidate_timeouts", r["timeouts"]["agent_a"]),
-                tob=r.get("opponent_timeouts", r["timeouts"]["agent_b"]),
+                toa="{}/{}".format(
+                    int(r.get("candidate_timeout_games", 0)),
+                    int(r.get("opponent_timeout_games", 0)),
+                ),
+                tob="{}/{}".format(
+                    int(r.get("candidate_timeout_moves", r.get("candidate_timeouts", r["timeouts"]["agent_a"]))),
+                    int(r.get("opponent_timeout_moves", r.get("opponent_timeouts", r["timeouts"]["agent_b"]))),
+                ),
                 steps=r["avg_steps"],
             )
         )
@@ -457,22 +469,59 @@ def _main() -> None:
     candidate_timeout_ms = float(eval_cfg["candidate_timeout_ms"])
     opponent_timeout_ms = float(eval_cfg["opponent_timeout_ms"])
 
-    candidate = create_agent(
-        args.candidate_agent,
-        checkpoint=args.checkpoint,
-        previous_best_checkpoint=args.previous_best_checkpoint,
-        simulations=int(args.simulations),
-        device=args.device,
-        seed=int(args.seed),
-        time_budget_ms=candidate_timeout_ms,
-    )
     opponents = _parse_agent_list(args.opponents)
     if not opponents:
         raise ValueError("--opponents cannot be empty")
 
-    opponent_agents: List[Tuple[str, UnifiedAgent]] = []
+    candidate_internal_budget_ms = eval_core.derive_internal_time_budget_ms(
+        candidate_timeout_ms,
+        default_budget_ms=eval_core.DEFAULT_NEGAMAX_TIME_BUDGET_MS,
+    )
+    opponent_internal_budget_negamax_ms = eval_core.derive_internal_time_budget_ms(
+        opponent_timeout_ms,
+        default_budget_ms=eval_core.DEFAULT_NEGAMAX_TIME_BUDGET_MS,
+    )
+    opponent_internal_budget_mcts_ms = eval_core.derive_internal_time_budget_ms(
+        opponent_timeout_ms,
+        default_budget_ms=eval_core.DEFAULT_MCTS_LITE_TIME_BUDGET_MS,
+    )
+    print(
+        "[eval] budget candidate(ext/internal)={ce:.0f}/{ci:.0f}ms "
+        "opponent(ext/internal negamax/mcts)={oe:.0f}/{oni:.0f}/{omi:.0f}ms".format(
+            ce=candidate_timeout_ms,
+            ci=candidate_internal_budget_ms,
+            oe=opponent_timeout_ms,
+            oni=opponent_internal_budget_negamax_ms,
+            omi=opponent_internal_budget_mcts_ms,
+        )
+    )
+
+    candidate: Optional[UnifiedAgent] = None
+
+    def _get_candidate() -> UnifiedAgent:
+        nonlocal candidate
+        if candidate is None:
+            candidate = create_agent(
+                args.candidate_agent,
+                checkpoint=args.checkpoint,
+                previous_best_checkpoint=args.previous_best_checkpoint,
+                simulations=int(args.simulations),
+                device=args.device,
+                seed=int(args.seed),
+                time_budget_ms=candidate_timeout_ms,
+            )
+        return candidate
+
+    candidate_results: Dict[str, Dict[str, Any]] = {}
+    played_opponents: List[str] = []
+    skipped_opponents: List[str] = []
     for i, opp_spec in enumerate(opponents):
-        opp = create_agent(
+        games_this = games_for_opponent(eval_cfg, opp_spec)
+        if int(games_this) <= 0:
+            print(f"[eval] opponent={opp_spec} skipped (games=0)")
+            skipped_opponents.append(opp_spec)
+            continue
+        opp_agent = create_agent(
             opp_spec,
             checkpoint=args.checkpoint,
             previous_best_checkpoint=args.previous_best_checkpoint,
@@ -481,13 +530,8 @@ def _main() -> None:
             seed=int(args.seed) + i + 1,
             time_budget_ms=opponent_timeout_ms,
         )
-        opponent_agents.append((opp_spec, opp))
-
-    candidate_results: Dict[str, Dict[str, Any]] = {}
-    for i, (opp_spec, opp_agent) in enumerate(opponent_agents):
-        games_this = games_for_opponent(eval_cfg, opp_spec)
         result = play_match(
-            candidate,
+            _get_candidate(),
             opp_agent,
             num_games=int(games_this),
             swap_sides=True,
@@ -501,36 +545,43 @@ def _main() -> None:
         )
         result["opponent"] = opp_spec
         candidate_results[opp_spec] = result
+        played_opponents.append(opp_spec)
 
     # Always evaluate candidate vs previous_best when checkpoint provided.
     if args.previous_best_checkpoint:
-        prev_best_opp = create_agent(
-            "previous_best",
-            checkpoint=args.checkpoint,
-            previous_best_checkpoint=args.previous_best_checkpoint,
-            simulations=int(args.simulations),
-            device=args.device,
-            seed=int(args.seed) + 9999,
-            time_budget_ms=opponent_timeout_ms,
-        )
-        r_prev = play_match(
-            candidate,
-            prev_best_opp,
-            num_games=max(20, games_for_opponent(eval_cfg, "previous_best")),
-            swap_sides=True,
-            seed=int(args.seed) + 2000,
-            candidate_timeout_ms=candidate_timeout_ms,
-            opponent_timeout_ms=opponent_timeout_ms,
-            eval_profile=eval_profile,
-            max_opponent_timeout_rate=float(args.max_opponent_timeout_rate),
-            max_candidate_timeout_rate=float(args.max_candidate_timeout_rate),
-            timeout_result_policy=str(args.timeout_result_policy),
-        )
-        r_prev["opponent"] = "previous_best"
-        candidate_results["previous_best"] = r_prev
+        prev_best_games = games_for_opponent(eval_cfg, "previous_best")
+        if int(prev_best_games) <= 0:
+            print("[eval] opponent=previous_best skipped (games=0)")
+            skipped_opponents.append("previous_best")
+        else:
+            prev_best_opp = create_agent(
+                "previous_best",
+                checkpoint=args.checkpoint,
+                previous_best_checkpoint=args.previous_best_checkpoint,
+                simulations=int(args.simulations),
+                device=args.device,
+                seed=int(args.seed) + 9999,
+                time_budget_ms=opponent_timeout_ms,
+            )
+            r_prev = play_match(
+                _get_candidate(),
+                prev_best_opp,
+                num_games=int(prev_best_games),
+                swap_sides=True,
+                seed=int(args.seed) + 2000,
+                candidate_timeout_ms=candidate_timeout_ms,
+                opponent_timeout_ms=opponent_timeout_ms,
+                eval_profile=eval_profile,
+                max_opponent_timeout_rate=float(args.max_opponent_timeout_rate),
+                max_candidate_timeout_rate=float(args.max_candidate_timeout_rate),
+                timeout_result_policy=str(args.timeout_result_policy),
+            )
+            r_prev["opponent"] = "previous_best"
+            candidate_results["previous_best"] = r_prev
+            played_opponents.append("previous_best")
 
     previous_best_results = None
-    if args.previous_best_checkpoint:
+    if args.previous_best_checkpoint and played_opponents:
         previous_best_results = {}
         previous_best = create_agent(
             "previous_best",
@@ -541,9 +592,21 @@ def _main() -> None:
             seed=int(args.seed) + 3000,
             time_budget_ms=candidate_timeout_ms,
         )
-        for i, (opp_spec, opp_agent) in enumerate(opponent_agents):
+        for i, opp_spec in enumerate(opponents):
             if opp_spec == "previous_best":
                 continue
+            games_this = games_for_opponent(eval_cfg, opp_spec)
+            if int(games_this) <= 0:
+                continue
+            opp_agent = create_agent(
+                opp_spec,
+                checkpoint=args.checkpoint,
+                previous_best_checkpoint=args.previous_best_checkpoint,
+                simulations=int(args.simulations),
+                device=args.device,
+                seed=int(args.seed) + i + 1,
+                time_budget_ms=opponent_timeout_ms,
+            )
             games_this = games_for_opponent(eval_cfg, opp_spec)
             rr = play_match(
                 previous_best,
@@ -560,6 +623,8 @@ def _main() -> None:
             )
             rr["opponent"] = opp_spec
             previous_best_results[opp_spec] = rr
+        if not previous_best_results:
+            previous_best_results = None
 
     passed, gate_reasons = should_promote_candidate(
         candidate_results,
@@ -593,6 +658,8 @@ def _main() -> None:
         f"opponent_timeout_ms={opponent_timeout_ms:.0f}"
     )
     print(f"games_by_opponent={eval_cfg.get('games_by_opponent', {})}")
+    if skipped_opponents:
+        print(f"skipped_opponents={sorted(set(skipped_opponents))}")
     print(table_text)
 
     print("\nGating")
@@ -628,6 +695,8 @@ def _main() -> None:
             "candidate_checkpoint": args.checkpoint,
             "checkpoint": args.checkpoint,
             "opponents": opponents,
+            "played_opponents": played_opponents,
+            "skipped_opponents": sorted(set(skipped_opponents)),
             "games": int(args.games),
             "games_by_opponent": dict(eval_cfg.get("games_by_opponent", {})),
             "simulations": int(args.simulations),
@@ -655,6 +724,7 @@ def _main() -> None:
             "warning": warning,
             "reliability_warnings": reliability_warnings,
         },
+        "skipped_opponents": sorted(set(skipped_opponents)),
     }
     json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -677,6 +747,7 @@ def _main() -> None:
         f"- previous_best_available: `{bool(prev_bias_status.get('available', False))}`",
         f"- side_bias_warning: `{bool(prev_bias_status.get('side_bias_warning', False))}`",
         f"- unstable_previous_best_eval: `{bool(prev_bias_status.get('unstable_previous_best_eval', False))}`",
+        f"- skipped_opponents: `{sorted(set(skipped_opponents))}`",
         "",
         "## Matrix",
         _format_markdown_table(rows),

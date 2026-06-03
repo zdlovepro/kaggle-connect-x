@@ -1,8 +1,8 @@
 {
   "teacher_data_path": "D:\\205zd\\Desktop\\Kaggle\\data\\teacher\\teacher_d5_n50000.npz",
   "pretrained_checkpoint": "D:\\205zd\\Desktop\\Kaggle\\checkpoints\\azlite_pretrained.pt",
-  "updated_at": "2026-06-01T04:13:04.219915+00:00",
-  "last_run_mode": "selfplay",
+  "updated_at": "2026-06-01T19:30:28.081177+00:00",
+  "last_run_mode": "bootstrap",
   "latest_checkpoint": "D:\\205zd\\Desktop\\Kaggle\\checkpoints\\azlite_train\\latest.pt",
   "best_checkpoint": "D:\\205zd\\Desktop\\Kaggle\\checkpoints\\azlite_train\\best.pt",
   "train_checkpoint_dir": "D:\\205zd\\Desktop\\Kaggle\\checkpoints\\azlite_train"

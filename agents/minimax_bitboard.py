@@ -231,6 +231,8 @@ class MinimaxBitboardAgent(BaseAgent):
         self.tt = TranspositionTable() if use_tt else None
         self.nodes_visited = 0
         self.search_start = 0.0
+        self.deadline = 0.0
+        self.timed_out = False
 
     def select_action(self, observation: Any, configuration: Any) -> int:
         board_list = observation.board
@@ -269,7 +271,13 @@ class MinimaxBitboardAgent(BaseAgent):
             self.stats["moves_made"] += 1
             return COLS // 2
 
-        return self._iterative_deepen(b_self, b_opp, heights, valid)
+        try:
+            move = self._iterative_deepen(b_self, b_opp, heights, valid)
+        except Exception:
+            move = valid[0]
+        if move not in valid:
+            move = valid[0]
+        return int(move)
 
     def _iterative_deepen(
         self,
@@ -279,11 +287,14 @@ class MinimaxBitboardAgent(BaseAgent):
         valid: List[int],
     ) -> int:
         """迭代加深: 从 depth=1 开始，逐步加深直到时间耗尽"""
-        self.nodes_visited = 0
         self.search_start = time.perf_counter()
+        self.deadline = self.search_start + (float(self.time_budget_ms) / 1000.0)
+        self.timed_out = False
 
         best_move = valid[0]
         search_hash = compute_hash(b_self, b_opp)
+        total_nodes = 0
+        depth_cost_ms: List[float] = []
 
         occupied = sum(heights)
         total_cells = COLS * ROWS
@@ -295,11 +306,22 @@ class MinimaxBitboardAgent(BaseAgent):
             start_depth = 8
 
         for depth in range(start_depth, self.max_depth + 1):
-            elapsed = (time.perf_counter() - self.search_start) * 1000
-            if elapsed > self.time_budget_ms * 0.5:
+            now = time.perf_counter()
+            remaining_ms = max(0.0, (self.deadline - now) * 1000.0)
+            if remaining_ms < 50.0:
                 break
 
+            if depth_cost_ms:
+                last_cost = depth_cost_ms[-1]
+                growth = 1.8
+                if len(depth_cost_ms) >= 2 and depth_cost_ms[-2] > 1e-6:
+                    growth = max(1.2, min(3.0, depth_cost_ms[-1] / depth_cost_ms[-2]))
+                est_next_cost = last_cost * growth
+                if remaining_ms < max(50.0, est_next_cost * 0.9):
+                    break
+
             self.nodes_visited = 0
+            depth_start = time.perf_counter()
 
             score, move = self._negascout(
                 b_self, b_opp, heights, depth,
@@ -308,18 +330,25 @@ class MinimaxBitboardAgent(BaseAgent):
             )
 
             # 只有未超时才算有效结果
-            if self.nodes_visited == -1:
+            if self.timed_out:
                 break  # 超时标记
 
-            best_move = move if move is not None else best_move
+            depth_elapsed_ms = (time.perf_counter() - depth_start) * 1000.0
+            depth_cost_ms.append(max(1e-6, depth_elapsed_ms))
+            total_nodes += max(0, int(self.nodes_visited))
+
+            if move is not None and move in valid:
+                best_move = move
 
             # 找到必胜/必败直接返回
             if abs(score) >= 9999:
                 break
 
-        self.stats["nodes_visited"] += self.nodes_visited if self.nodes_visited > 0 else 0
+        self.stats["nodes_visited"] += max(0, int(total_nodes))
         self.stats["moves_made"] += 1
 
+        if best_move not in valid:
+            return valid[0]
         return best_move
 
     def _negascout(
@@ -333,10 +362,9 @@ class MinimaxBitboardAgent(BaseAgent):
         color: float,
         hash_key: np.uint64,
     ) -> Tuple[float, Optional[int]]:
-        if self.nodes_visited % 10000 == 0:
-            elapsed = (time.perf_counter() - self.search_start) * 1000
-            if elapsed > self.time_budget_ms:
-                self.nodes_visited = -1
+        if (self.nodes_visited & 1023) == 0:
+            if time.perf_counter() >= self.deadline:
+                self.timed_out = True
                 return 0.0, None
 
         self.nodes_visited += 1
@@ -425,7 +453,7 @@ class MinimaxBitboardAgent(BaseAgent):
             heights[col] -= 1
 
             # 超时检查
-            if self.nodes_visited == -1:
+            if self.timed_out:
                 return 0.0, None
 
             if child_score > best_score:

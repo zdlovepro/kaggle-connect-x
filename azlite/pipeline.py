@@ -54,12 +54,15 @@ class PipelinePaths:
 def _ensure_layout(train_ckpt_dir: Path) -> PipelinePaths:
     if not train_ckpt_dir.is_absolute():
         train_ckpt_dir = ROOT / train_ckpt_dir
+    run_name = train_ckpt_dir.name
     data_teacher = ROOT / "data" / "teacher"
-    data_selfplay = ROOT / "data" / "selfplay"
+    data_selfplay_root = ROOT / "data" / "selfplay"
+    data_selfplay = data_selfplay_root / run_name
     checkpoints = ROOT / "checkpoints"
-    logs = ROOT / "logs"
+    logs_root = ROOT / "logs"
+    logs = logs_root / run_name
 
-    for d in (data_teacher, data_selfplay, checkpoints, logs, train_ckpt_dir):
+    for d in (data_teacher, data_selfplay_root, data_selfplay, checkpoints, logs_root, logs, train_ckpt_dir):
         d.mkdir(parents=True, exist_ok=True)
 
     return PipelinePaths(
@@ -192,7 +195,7 @@ def _previous_best_side_bias_status(candidate_results: Dict[str, Dict[str, Any]]
 
 def _format_eval_rows(rows: Sequence[Dict[str, Any]]) -> str:
     lines = [
-        "| Opponent | W/L/D | WR | FP_WR | SP_WR | Invalid(A) | Timeout(A) | Timeout(B) | AvgStepMs(A) | P95StepMs(A) |",
+        "| Opponent | W/L/D | WR | FP_WR | SP_WR | Invalid(A) | TO_GAME(A/B) | TO_MOVE(A/B) | AvgStepMs(A) | P95StepMs(A) |",
         "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for r in rows:
@@ -206,8 +209,14 @@ def _format_eval_rows(rows: Sequence[Dict[str, Any]]) -> str:
                 fp=float(r.get("first_player_win_rate", 0.0)) * 100.0,
                 sp=float(r.get("second_player_win_rate", 0.0)) * 100.0,
                 ill=int(r.get("invalid_actions", {}).get("candidate", r["illegal_actions"]["agent_a"])),
-                to_a=int(r.get("candidate_timeouts", r["timeouts"]["agent_a"])),
-                to_b=int(r.get("opponent_timeouts", r["timeouts"]["agent_b"])),
+                to_a="{}/{}".format(
+                    int(r.get("candidate_timeout_games", 0)),
+                    int(r.get("opponent_timeout_games", 0)),
+                ),
+                to_b="{}/{}".format(
+                    int(r.get("candidate_timeout_moves", r.get("candidate_timeouts", r["timeouts"]["agent_a"]))),
+                    int(r.get("opponent_timeout_moves", r.get("opponent_timeouts", r["timeouts"]["agent_b"]))),
+                ),
                 avg=float(r["avg_step_time_sec"]["agent_a"]) * 1000.0,
                 p95=float(r["p95_step_time_sec"]["agent_a"]) * 1000.0,
             )
@@ -257,8 +266,11 @@ def _evaluate_checkpoint_matrix(
     )
 
     candidate_results: Dict[str, Dict[str, Any]] = {}
-    opponent_agents: List[Tuple[str, Any]] = []
+    opponent_agents: List[Tuple[str, Any, int]] = []
     for i, spec in enumerate(opponents):
+        games_this = eval_core.games_for_opponent(eval_cfg, spec)
+        if int(games_this) <= 0:
+            continue
         opp = eval_mod.create_agent(
             spec,
             checkpoint=str(checkpoint_path),
@@ -268,10 +280,9 @@ def _evaluate_checkpoint_matrix(
             seed=int(seed) + 100 + i,
             time_budget_ms=float(eval_cfg["opponent_timeout_ms"]),
         )
-        opponent_agents.append((spec, opp))
+        opponent_agents.append((spec, opp, int(games_this)))
 
-    for i, (spec, opp) in enumerate(opponent_agents):
-        games_this = eval_core.games_for_opponent(eval_cfg, spec)
+    for i, (spec, opp, games_this) in enumerate(opponent_agents):
         r = eval_mod.play_match(
             candidate,
             opp,
@@ -292,7 +303,8 @@ def _evaluate_checkpoint_matrix(
     previous_best_available = bool(
         previous_best_checkpoint is not None and previous_best_checkpoint.exists()
     )
-    if previous_best_checkpoint is not None and previous_best_checkpoint.exists():
+    prev_best_games = eval_core.games_for_opponent(eval_cfg, "previous_best")
+    if previous_best_checkpoint is not None and previous_best_checkpoint.exists() and int(prev_best_games) > 0:
         prev_best_agent = eval_mod.create_agent(
             "previous_best",
             checkpoint=str(checkpoint_path),
@@ -305,7 +317,7 @@ def _evaluate_checkpoint_matrix(
         r_prev = eval_mod.play_match(
             candidate,
             prev_best_agent,
-            num_games=max(20, eval_core.games_for_opponent(eval_cfg, "previous_best")),
+            num_games=int(prev_best_games),
             swap_sides=True,
             seed=int(seed) + 2223,
             candidate_timeout_ms=float(eval_cfg["candidate_timeout_ms"]),
@@ -319,8 +331,7 @@ def _evaluate_checkpoint_matrix(
         candidate_results["previous_best"] = r_prev
 
         previous_best_results = {}
-        for i, (spec, opp) in enumerate(opponent_agents):
-            games_this = eval_core.games_for_opponent(eval_cfg, spec)
+        for i, (spec, opp, games_this) in enumerate(opponent_agents):
             rr = eval_mod.play_match(
                 prev_best_agent,
                 opp,
@@ -514,8 +525,60 @@ def _sync_selfplay_npz(src_dir: Path, dst_dir: Path) -> int:
     return copied
 
 
-def _default_teacher_path(paths: PipelinePaths, positions: int, depth: int) -> Path:
-    return paths.data_teacher / f"teacher_d{int(depth)}_n{int(positions)}.npz"
+def _default_teacher_path(
+    paths: PipelinePaths,
+    positions: int,
+    depth: int,
+    value_mode: str = "teacher",
+    max_state_repeats: int = 1,
+) -> Path:
+    return paths.data_teacher / (
+        f"teacher_d{int(depth)}_n{int(positions)}_v{value_mode}_r{int(max_state_repeats)}.npz"
+    )
+
+
+def _load_checkpoint_metadata(checkpoint_path: Path) -> Dict[str, Any]:
+    if not checkpoint_path.exists():
+        return {}
+    try:
+        import torch
+
+        ckpt = torch.load(str(checkpoint_path), map_location="cpu")
+        return dict(ckpt.get("metadata") or {})
+    except Exception:
+        return {}
+
+
+def _pretrained_checkpoint_refresh_reasons(
+    checkpoint_path: Path,
+    args: argparse.Namespace,
+) -> List[str]:
+    meta = _load_checkpoint_metadata(checkpoint_path)
+    data_meta = dict(meta.get("data_metadata") or {})
+    reasons: List[str] = []
+    if not data_meta:
+        reasons.append("missing teacher data metadata")
+        return reasons
+
+    if str(data_meta.get("value_mode", "")) != str(args.teacher_value_mode):
+        reasons.append(
+            f"value_mode={data_meta.get('value_mode')} != requested {args.teacher_value_mode}"
+        )
+    if str(data_meta.get("policy_mode", "")) != str(args.teacher_policy_mode):
+        reasons.append(
+            f"policy_mode={data_meta.get('policy_mode')} != requested {args.teacher_policy_mode}"
+        )
+    if int(data_meta.get("teacher_depth", -1) or -1) != int(args.teacher_depth):
+        reasons.append(
+            f"teacher_depth={data_meta.get('teacher_depth')} != requested {args.teacher_depth}"
+        )
+    if int(data_meta.get("max_state_repeats", 0) or 0) != int(args.teacher_max_state_repeats):
+        reasons.append(
+            "teacher sampling repeat cap mismatch or missing dedup metadata"
+        )
+    if str(data_meta.get("value_mode", "")) == "score":
+        reasons.append("legacy score-valued teacher data detected")
+    return reasons
 
 
 def _snapshot_previous_best(best_path: Path, checkpoints_dir: Path) -> Optional[Path]:
@@ -811,8 +874,23 @@ def _write_training_summary(
     for rec in recs:
         lines.append(f"- {rec}")
 
+    summary_text = "\n".join(lines)
     summary_path.parent.mkdir(parents=True, exist_ok=True)
-    summary_path.write_text("\n".join(lines), encoding="utf-8")
+    summary_path.write_text(summary_text, encoding="utf-8")
+    latest_summary = ROOT / "logs" / "training_summary.md"
+    if latest_summary.resolve() != summary_path.resolve():
+        latest_summary.write_text(
+            "\n".join(
+                [
+                    "# Training Summary",
+                    "",
+                    f"- Active run summary: `{summary_path.resolve()}`",
+                    "",
+                    summary_text,
+                ]
+            ),
+            encoding="utf-8",
+        )
 
 
 def _run_bootstrap(
@@ -822,7 +900,11 @@ def _run_bootstrap(
     state: Dict[str, Any],
 ) -> Dict[str, Any]:
     teacher_path = Path(args.teacher_data_path) if args.teacher_data_path else _default_teacher_path(
-        paths, args.teacher_positions, args.teacher_depth
+        paths,
+        args.teacher_positions,
+        args.teacher_depth,
+        value_mode=str(args.teacher_value_mode),
+        max_state_repeats=int(args.teacher_max_state_repeats),
     )
 
     if args.resume and teacher_path.exists():
@@ -845,6 +927,7 @@ def _run_bootstrap(
             mcts_time_ms=float(args.teacher_mcts_time_ms),
             negamax_time_ms=float(args.teacher_negamax_time_ms),
             rollout_policy=str(args.teacher_rollout_policy),
+            max_state_repeats=int(args.teacher_max_state_repeats),
         )
         save_dataset_npz(teacher_path, states, policies, values, metadata)
         print(f"[pipeline] bootstrap: teacher data saved {teacher_path.resolve()}")
@@ -927,6 +1010,10 @@ def _run_bootstrap(
         {
             "teacher_data_path": str(teacher_path.resolve()),
             "pretrained_checkpoint": str(pretrain_ckpt.resolve()),
+            "train_checkpoint_dir": str(paths.train_ckpt_dir.resolve()),
+            "selfplay_data_dir": str(paths.data_selfplay.resolve()),
+            "logs_dir": str(paths.logs.resolve()),
+            "training_summary_path": str(paths.training_summary.resolve()),
             "updated_at": _utc_now_iso(),
             "last_run_mode": "bootstrap",
         }
@@ -981,6 +1068,10 @@ def _run_selfplay(
         str(float(args.train_lr)),
         "--buffer-size",
         str(int(args.buffer_size)),
+        "--teacher-batch-ratio-start",
+        str(float(args.teacher_batch_ratio_start)),
+        "--teacher-batch-ratio-end",
+        str(float(args.teacher_batch_ratio_end)),
         "--device",
         str(args.device),
         "--checkpoint-dir",
@@ -1245,6 +1336,9 @@ def _run_selfplay(
                 else ""
             ),
             "train_checkpoint_dir": str(ckpt_dir.resolve()),
+            "selfplay_data_dir": str(paths.data_selfplay.resolve()),
+            "logs_dir": str(paths.logs.resolve()),
+            "training_summary_path": str(paths.training_summary.resolve()),
             "updated_at": _utc_now_iso(),
             "last_run_mode": "selfplay",
         }
@@ -1269,12 +1363,13 @@ def _main() -> None:
     parser.add_argument("--teacher-source-mix", type=str, default=DEFAULT_SOURCE_MIX)
     parser.add_argument("--teacher-policy-mode", choices=("soft", "one_hot"), default="soft")
     parser.add_argument("--teacher-policy-temperature", type=float, default=1.0)
-    parser.add_argument("--teacher-value-mode", choices=("score", "teacher", "rollout"), default="score")
-    parser.add_argument("--teacher-value-scale", type=float, default=10000.0)
+    parser.add_argument("--teacher-value-mode", choices=("score", "teacher", "rollout"), default="teacher")
+    parser.add_argument("--teacher-value-scale", type=float, default=0.0)
     parser.add_argument("--teacher-rollout-policy", choices=("heuristic", "negamax", "mcts", "random"), default="heuristic")
     parser.add_argument("--teacher-mcts-sims", type=int, default=96)
     parser.add_argument("--teacher-mcts-time-ms", type=float, default=90.0)
     parser.add_argument("--teacher-negamax-time-ms", type=float, default=220.0)
+    parser.add_argument("--teacher-max-state-repeats", type=int, default=1)
     parser.add_argument("--teacher-no-legal-channel", action="store_true")
     parser.add_argument("--teacher-data-path", type=str, default=None)
 
@@ -1327,6 +1422,8 @@ def _main() -> None:
     )
     parser.add_argument("--opponents", type=str, default="random,negamax,mcts_lite")
     parser.add_argument("--skip-strong-local-final-eval", action="store_true")
+    parser.add_argument("--teacher-batch-ratio-start", type=float, default=0.25)
+    parser.add_argument("--teacher-batch-ratio-end", type=float, default=0.10)
 
     # Paths / outputs.
     parser.add_argument("--checkpoint-dir", type=str, default="checkpoints/azlite_train")
@@ -1354,8 +1451,16 @@ def _main() -> None:
             state = _run_selfplay(args, paths, git_info, state)
         else:
             pre_ckpt = Path(args.pretrain_checkpoint)
-            if not pre_ckpt.exists():
-                print("[pipeline] full: pretrained checkpoint missing, run bootstrap first.")
+            refresh_reasons: List[str] = []
+            if pre_ckpt.exists():
+                refresh_reasons = _pretrained_checkpoint_refresh_reasons(pre_ckpt, args)
+            if (not pre_ckpt.exists()) or refresh_reasons:
+                if pre_ckpt.exists():
+                    print("[pipeline] full: pretrained checkpoint needs refresh, rerun bootstrap.")
+                else:
+                    print("[pipeline] full: pretrained checkpoint missing, run bootstrap first.")
+                if refresh_reasons:
+                    print("[pipeline] full: refresh bootstrap because " + "; ".join(refresh_reasons))
                 state = _run_bootstrap(args, paths, git_info, state)
             else:
                 print(f"[pipeline] full: reuse pretrained checkpoint {pre_ckpt}")

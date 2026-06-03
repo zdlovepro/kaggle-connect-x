@@ -54,11 +54,11 @@ COLS = 7
 MAX_MOVES = ROWS * COLS
 
 DEFAULT_SOURCE_MIX = (
-    "random:0.20,"
-    "heuristic_vs_random:0.30,"
-    "mcts_vs_random:0.20,"
-    "mcts_vs_negamax:0.15,"
-    "negamax_selfplay:0.15"
+    "random:0.05,"
+    "heuristic_vs_random:0.10,"
+    "mcts_vs_random:0.05,"
+    "mcts_vs_negamax:0.40,"
+    "negamax_selfplay:0.40"
 )
 
 
@@ -236,11 +236,14 @@ def collect_positions(
     source_mix: Sequence[Tuple[str, float]],
     ctx: TeacherContext,
     seed: int = 42,
+    max_state_repeats: int = 1,
 ) -> List[Tuple[np.ndarray, int, str]]:
     """Collect non-terminal positions from mixed game sources."""
     rng = random.Random(seed)
     out: List[Tuple[np.ndarray, int, str]] = []
+    state_counts: Dict[bytes, int] = {}
     games = 0
+    repeat_limit = max(1, int(max_state_repeats))
 
     while len(out) < positions:
         source = _sample_source(source_mix, rng)
@@ -254,9 +257,13 @@ def collect_positions(
             if terminal_value(board, mark) is not None:
                 break
 
-            out.append((board.copy(), int(mark), source))
-            if len(out) >= positions:
-                break
+            state_key = board.tobytes() + bytes((int(mark),))
+            seen = state_counts.get(state_key, 0)
+            if seen < repeat_limit:
+                out.append((board.copy(), int(mark), source))
+                state_counts[state_key] = seen + 1
+                if len(out) >= positions:
+                    break
 
             policy_name = p1_policy if mark == 1 else p2_policy
             move = _select_move_by_policy(policy_name, board, mark, ctx, rng)
@@ -499,7 +506,10 @@ def _value_from_scores(
         return 0.0
     if value_mode == "score":
         best = float(np.max(scores[list(legal)]))
-        denom = max(1e-6, float(value_scale))
+        finite = np.abs(np.asarray(scores[list(legal)], dtype=np.float64))
+        finite = finite[np.isfinite(finite)]
+        inferred = float(np.max(finite)) if finite.size > 0 else 1.0
+        denom = max(1e-6, float(value_scale if value_scale > 0.0 else inferred))
         return float(max(-1.0, min(1.0, math.tanh(best / denom))))
     return float(max(-1.0, min(1.0, teacher_value)))
 
@@ -549,6 +559,7 @@ def build_teacher_dataset(
     mcts_time_ms: float,
     negamax_time_ms: float,
     rollout_policy: str,
+    max_state_repeats: int = 1,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Dict[str, object]]:
     ctx = TeacherContext(
         teacher_depth=teacher_depth,
@@ -563,6 +574,7 @@ def build_teacher_dataset(
         source_mix=source_mix,
         ctx=ctx,
         seed=seed,
+        max_state_repeats=max_state_repeats,
     )
 
     states: List[np.ndarray] = []
@@ -640,6 +652,8 @@ def build_teacher_dataset(
         "mcts_sims": int(mcts_sims),
         "mcts_time_ms": float(mcts_time_ms),
         "negamax_time_ms": float(negamax_time_ms),
+        "max_state_repeats": int(max_state_repeats),
+        "deduplicated_sampling": bool(int(max_state_repeats) == 1),
         "created_at": _utc_now_iso(),
     }
     return states_arr, policies_arr, values_arr, metadata
@@ -681,15 +695,26 @@ def _main() -> None:
     parser.add_argument(
         "--value-mode",
         choices=("score", "teacher", "rollout"),
-        default="score",
+        default="teacher",
         help="score: tanh(best_score/scale); teacher: use teacher returned value; rollout: full game rollout outcome",
     )
-    parser.add_argument("--value-scale", type=float, default=10000.0)
+    parser.add_argument(
+        "--value-scale",
+        type=float,
+        default=0.0,
+        help="Only used when --value-mode=score. <=0 means infer scale from teacher scores.",
+    )
     parser.add_argument("--source-mix", type=str, default=DEFAULT_SOURCE_MIX)
     parser.add_argument("--rollout-policy", choices=("heuristic", "negamax", "mcts", "random"), default="heuristic")
     parser.add_argument("--mcts-sims", type=int, default=96)
     parser.add_argument("--mcts-time-ms", type=float, default=90.0)
     parser.add_argument("--negamax-time-ms", type=float, default=220.0)
+    parser.add_argument(
+        "--max-state-repeats",
+        type=int,
+        default=1,
+        help="Exact board+player repeat cap during teacher sampling. 1 means exact dedup.",
+    )
     parser.add_argument("--no-legal-channel", action="store_true")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--output", type=str, required=True)
@@ -713,6 +738,7 @@ def _main() -> None:
         mcts_time_ms=float(args.mcts_time_ms),
         negamax_time_ms=float(args.negamax_time_ms),
         rollout_policy=str(args.rollout_policy),
+        max_state_repeats=int(args.max_state_repeats),
     )
 
     output = Path(args.output)

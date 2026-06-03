@@ -199,7 +199,7 @@ class ReplayBuffer:
             self._values[idx].astype(np.float32, copy=False),
         )
 
-    def save(self, path: str | Path) -> Path:
+    def save(self, path: str | Path, metadata_extra: dict | None = None) -> Path:
         p = Path(path)
         p.parent.mkdir(parents=True, exist_ok=True)
         if self._states is None:
@@ -217,6 +217,8 @@ class ReplayBuffer:
             "state_shape": list(states.shape[1:]),
             "created_at": _utc_now_iso(),
         }
+        if isinstance(metadata_extra, dict):
+            metadata.update(metadata_extra)
         np.savez_compressed(
             str(p),
             states=states.astype(np.float32, copy=False),
@@ -248,4 +250,3 @@ class ReplayBuffer:
         self._values = None
         self._append_arrays(states, policies, values)
         return self
-
