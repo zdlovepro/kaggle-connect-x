@@ -928,6 +928,8 @@ def _run_bootstrap(
             negamax_time_ms=float(args.teacher_negamax_time_ms),
             rollout_policy=str(args.teacher_rollout_policy),
             max_state_repeats=int(args.teacher_max_state_repeats),
+            source_sampling_mode=str(args.teacher_source_sampling_mode),
+            max_source_stall_games=int(args.teacher_max_source_stall_games),
         )
         save_dataset_npz(teacher_path, states, policies, values, metadata)
         print(f"[pipeline] bootstrap: teacher data saved {teacher_path.resolve()}")
@@ -1072,6 +1074,8 @@ def _run_selfplay(
         str(float(args.teacher_batch_ratio_start)),
         "--teacher-batch-ratio-end",
         str(float(args.teacher_batch_ratio_end)),
+        "--selfplay-actor-mode",
+        str(args.selfplay_actor_mode),
         "--device",
         str(args.device),
         "--checkpoint-dir",
@@ -1369,6 +1373,12 @@ def _main() -> None:
     parser.add_argument("--teacher-mcts-sims", type=int, default=96)
     parser.add_argument("--teacher-mcts-time-ms", type=float, default=90.0)
     parser.add_argument("--teacher-negamax-time-ms", type=float, default=220.0)
+    parser.add_argument(
+        "--teacher-source-sampling-mode",
+        choices=("quota", "game_weighted"),
+        default="quota",
+    )
+    parser.add_argument("--teacher-max-source-stall-games", type=int, default=128)
     parser.add_argument("--teacher-max-state-repeats", type=int, default=1)
     parser.add_argument("--teacher-no-legal-channel", action="store_true")
     parser.add_argument("--teacher-data-path", type=str, default=None)
@@ -1377,7 +1387,7 @@ def _main() -> None:
     parser.add_argument("--pretrain-epochs", type=int, default=8)
     parser.add_argument("--pretrain-batch-size", type=int, default=256)
     parser.add_argument("--pretrain-lr", type=float, default=3e-4)
-    parser.add_argument("--pretrain-value-loss-weight", type=float, default=1.0)
+    parser.add_argument("--pretrain-value-loss-weight", type=float, default=0.5)
     parser.add_argument("--skip-bootstrap-eval", action="store_true")
 
     # Selfplay/train options.
@@ -1422,8 +1432,9 @@ def _main() -> None:
     )
     parser.add_argument("--opponents", type=str, default="random,negamax,mcts_lite")
     parser.add_argument("--skip-strong-local-final-eval", action="store_true")
-    parser.add_argument("--teacher-batch-ratio-start", type=float, default=0.25)
-    parser.add_argument("--teacher-batch-ratio-end", type=float, default=0.10)
+    parser.add_argument("--teacher-batch-ratio-start", type=float, default=0.30)
+    parser.add_argument("--teacher-batch-ratio-end", type=float, default=0.05)
+    parser.add_argument("--selfplay-actor-mode", choices=("latest", "best", "alternate"), default="alternate")
 
     # Paths / outputs.
     parser.add_argument("--checkpoint-dir", type=str, default="checkpoints/azlite_train")

@@ -372,7 +372,10 @@ def _select_child(node: _Node, c_puct: float, columns: int) -> Tuple[int, _Node]
         child = node.children.get(col)
         if child is None:
             continue
-        score = child.q + c_puct * child.prior * sqrt_n / (1.0 + child.visit_count)
+        # child.q is from the child player's perspective, which is the
+        # opponent of the parent node player. Negate it to score from the
+        # parent perspective.
+        score = -child.q + c_puct * child.prior * sqrt_n / (1.0 + child.visit_count)
         if score > best_score:
             best_score = score
             best_action = col

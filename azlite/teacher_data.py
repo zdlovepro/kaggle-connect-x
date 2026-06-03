@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -54,11 +54,11 @@ COLS = 7
 MAX_MOVES = ROWS * COLS
 
 DEFAULT_SOURCE_MIX = (
-    "random:0.05,"
+    "random:0.10,"
     "heuristic_vs_random:0.10,"
-    "mcts_vs_random:0.05,"
-    "mcts_vs_negamax:0.40,"
-    "negamax_selfplay:0.40"
+    "mcts_vs_random:0.15,"
+    "mcts_vs_negamax:0.55,"
+    "negamax_selfplay:0.10"
 )
 
 
@@ -118,6 +118,44 @@ def _sample_source(mix: Sequence[Tuple[str, float]], rng: random.Random) -> str:
         if x <= acc:
             return name
     return mix[-1][0]
+
+
+def _allocate_source_targets(
+    positions: int,
+    source_mix: Sequence[Tuple[str, float]],
+) -> Dict[str, int]:
+    mix = _normalize_mix(source_mix)
+    total = max(0, int(positions))
+    raw = [(name, float(total) * float(weight)) for name, weight in mix]
+    targets = {name: int(math.floor(v)) for name, v in raw}
+    remainder = total - sum(targets.values())
+    ranked = sorted(raw, key=lambda item: (-(item[1] - math.floor(item[1])), item[0]))
+    for i in range(remainder):
+        name = ranked[i % len(ranked)][0]
+        targets[name] += 1
+    return targets
+
+
+def _sample_source_by_remaining_quota(
+    targets: Mapping[str, int],
+    kept_counts: Mapping[str, int],
+    rng: random.Random,
+) -> Optional[str]:
+    deficits = [
+        (name, int(target) - int(kept_counts.get(name, 0)))
+        for name, target in targets.items()
+        if int(target) > int(kept_counts.get(name, 0))
+    ]
+    if not deficits:
+        return None
+    total = sum(deficit for _, deficit in deficits)
+    x = rng.randrange(total)
+    acc = 0
+    for name, deficit in deficits:
+        acc += deficit
+        if x < acc:
+            return name
+    return deficits[-1][0]
 
 
 @dataclass
@@ -237,21 +275,44 @@ def collect_positions(
     ctx: TeacherContext,
     seed: int = 42,
     max_state_repeats: int = 1,
+    source_sampling_mode: str = "quota",
+    max_source_stall_games: int = 128,
 ) -> List[Tuple[np.ndarray, int, str]]:
     """Collect non-terminal positions from mixed game sources."""
     rng = random.Random(seed)
     out: List[Tuple[np.ndarray, int, str]] = []
     state_counts: Dict[bytes, int] = {}
+    source_targets = _allocate_source_targets(int(positions), source_mix)
+    kept_counts: Dict[str, int] = {name: 0 for name in source_targets}
+    stalled_games: Dict[str, int] = {name: 0 for name in source_targets}
     games = 0
     repeat_limit = max(1, int(max_state_repeats))
+    stall_limit = max(8, int(max_source_stall_games))
+    mode = str(source_sampling_mode).strip().lower() or "quota"
 
     while len(out) < positions:
-        source = _sample_source(source_mix, rng)
+        if mode == "quota":
+            source = _sample_source_by_remaining_quota(source_targets, kept_counts, rng)
+            if source is None:
+                mode = "weighted_fill"
+                source = _sample_source(source_mix, rng)
+            else:
+                deficit = int(source_targets.get(source, 0)) - int(kept_counts.get(source, 0))
+                if deficit > 0 and int(stalled_games.get(source, 0)) >= stall_limit:
+                    source_targets[source] = int(kept_counts.get(source, 0))
+                    source = _sample_source_by_remaining_quota(source_targets, kept_counts, rng)
+                    if source is None:
+                        mode = "weighted_fill"
+                        source = _sample_source(source_mix, rng)
+        else:
+            source = _sample_source(source_mix, rng)
+
         p1_policy, p2_policy = _source_roles(source, games)
         games += 1
 
         board = np.zeros((ROWS, COLS), dtype=np.int8)
         mark = 1
+        added_this_game = 0
 
         for _ in range(MAX_MOVES):
             if terminal_value(board, mark) is not None:
@@ -259,9 +320,13 @@ def collect_positions(
 
             state_key = board.tobytes() + bytes((int(mark),))
             seen = state_counts.get(state_key, 0)
-            if seen < repeat_limit:
+            target_remaining = int(source_targets.get(source, 0)) - int(kept_counts.get(source, 0))
+            quota_allows_append = (mode != "quota") or (target_remaining > 0)
+            if quota_allows_append and seen < repeat_limit:
                 out.append((board.copy(), int(mark), source))
                 state_counts[state_key] = seen + 1
+                kept_counts[source] = kept_counts.get(source, 0) + 1
+                added_this_game += 1
                 if len(out) >= positions:
                     break
 
@@ -272,6 +337,22 @@ def collect_positions(
                 move = valid[0] if valid else 0
             board = apply_move(board, move, mark)
             mark = 2 if mark == 1 else 1
+
+        if source in stalled_games:
+            if added_this_game <= 0:
+                stalled_games[source] = stalled_games.get(source, 0) + 1
+            else:
+                stalled_games[source] = 0
+        if games % 50 == 0 or len(out) >= positions:
+            summary = ", ".join(
+                f"{name}:{kept_counts.get(name, 0)}/{source_targets.get(name, 0)}"
+                for name, _ in source_mix
+                if name in source_targets
+            )
+            print(
+                f"[teacher_data] collecting games={games} kept={len(out)}/{positions} "
+                f"mode={mode} sources=[{summary}]"
+            )
 
     return out
 
@@ -560,6 +641,8 @@ def build_teacher_dataset(
     negamax_time_ms: float,
     rollout_policy: str,
     max_state_repeats: int = 1,
+    source_sampling_mode: str = "quota",
+    max_source_stall_games: int = 128,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Dict[str, object]]:
     ctx = TeacherContext(
         teacher_depth=teacher_depth,
@@ -575,6 +658,8 @@ def build_teacher_dataset(
         ctx=ctx,
         seed=seed,
         max_state_repeats=max_state_repeats,
+        source_sampling_mode=source_sampling_mode,
+        max_source_stall_games=max_source_stall_games,
     )
 
     states: List[np.ndarray] = []
@@ -647,7 +732,10 @@ def build_teacher_dataset(
         "value_scale": float(value_scale),
         "channels": int(states_arr.shape[1]) if states_arr.ndim == 4 else 0,
         "source_mix": [{"name": n, "weight": float(w)} for n, w in source_mix],
+        "source_targets": _allocate_source_targets(int(positions), source_mix),
         "source_counts": source_counter,
+        "source_sampling_mode": str(source_sampling_mode),
+        "max_source_stall_games": int(max_source_stall_games),
         "rollout_policy": rollout_policy,
         "mcts_sims": int(mcts_sims),
         "mcts_time_ms": float(mcts_time_ms),
@@ -710,6 +798,18 @@ def _main() -> None:
     parser.add_argument("--mcts-time-ms", type=float, default=90.0)
     parser.add_argument("--negamax-time-ms", type=float, default=220.0)
     parser.add_argument(
+        "--source-sampling-mode",
+        choices=("quota", "game_weighted"),
+        default="quota",
+        help="quota: try to match final retained source counts to source_mix; game_weighted: sample game sources directly by source_mix.",
+    )
+    parser.add_argument(
+        "--max-source-stall-games",
+        type=int,
+        default=128,
+        help="In quota mode, give up on a source after this many zero-added games and fill the remainder from other sources.",
+    )
+    parser.add_argument(
         "--max-state-repeats",
         type=int,
         default=1,
@@ -739,6 +839,10 @@ def _main() -> None:
         negamax_time_ms=float(args.negamax_time_ms),
         rollout_policy=str(args.rollout_policy),
         max_state_repeats=int(args.max_state_repeats),
+        source_sampling_mode=(
+            "quota" if str(args.source_sampling_mode) == "quota" else "game_weighted"
+        ),
+        max_source_stall_games=int(args.max_source_stall_games),
     )
 
     output = Path(args.output)

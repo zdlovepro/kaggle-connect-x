@@ -224,7 +224,10 @@ def _select_child(node: MCTSNode, c_puct: float) -> Tuple[int, MCTSNode]:
         child = node.children.get(action)
         if child is None:
             continue
-        q = child.q_value  # 0 for unvisited nodes
+        # child.q_value is stored from child.current_player perspective.
+        # Since child.current_player is the opponent of node.current_player,
+        # negate it to score this move from the parent/node perspective.
+        q = -child.q_value  # 0 for unvisited nodes
         u = c_puct * float(child.prior) * sqrt_parent / (1.0 + child.visit_count)
         score = q + u
         if score > best_score:

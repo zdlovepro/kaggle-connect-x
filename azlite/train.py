@@ -26,7 +26,7 @@ from azlite.board import find_immediate_block, find_immediate_win, legal_moves, 
 from azlite.model import ConnectXNet, NeuralEvaluator, save_checkpoint
 from azlite.puct_mcts import run_mcts
 from azlite.replay_buffer import ReplayBuffer
-from azlite.self_play import generate_self_play_games
+from azlite.self_play import MCTS_TARGET_VERSION, generate_self_play_games
 
 
 VALUE_LOSS_WEIGHT = 1.0
@@ -687,14 +687,20 @@ def _main() -> None:
     parser.add_argument(
         "--teacher-batch-ratio-start",
         type=float,
-        default=0.25,
+        default=0.30,
         help="Teacher sample ratio at the start of training when teacher data is present.",
     )
     parser.add_argument(
         "--teacher-batch-ratio-end",
         type=float,
-        default=0.10,
+        default=0.05,
         help="Teacher sample ratio near the end of training when teacher data is present.",
+    )
+    parser.add_argument(
+        "--selfplay-actor-mode",
+        choices=("latest", "best", "alternate"),
+        default="alternate",
+        help="Which checkpoint drives self-play data generation once best.pt exists.",
     )
     parser.add_argument(
         "--allow-legacy-teacher-data",
@@ -753,6 +759,14 @@ def _main() -> None:
         model, optimizer, ckpt_meta = _load_model_and_optimizer(
             latest_ckpt_path, device=device, lr=float(args.lr)
         )
+        resumed_target_version = str(ckpt_meta.get("mcts_target_version", "") or "")
+        resumed_iteration = int(ckpt_meta.get("iteration", 0) or 0)
+        if resumed_iteration > 0 and resumed_target_version != MCTS_TARGET_VERSION:
+            raise RuntimeError(
+                "Refusing to resume latest checkpoint trained with legacy/missing "
+                f"MCTS target version (found={resumed_target_version or 'missing'} "
+                f"expected={MCTS_TARGET_VERSION}). Start from a fresh checkpoint/pretrain instead."
+            )
         print(f"[train] resumed model from latest checkpoint: {latest_ckpt_path.resolve()}")
     elif args.checkpoint:
         model, optimizer, ckpt_meta = _load_model_and_optimizer(
@@ -772,9 +786,15 @@ def _main() -> None:
     if args.resume and replay_path.exists():
         replay_meta = _load_selfplay_metadata(replay_path)
         replay_kind = str(replay_meta.get("buffer_kind", "") or "")
-        if replay_kind == "selfplay_only":
+        replay_target_version = str(replay_meta.get("mcts_target_version", "") or "")
+        if replay_kind == "selfplay_only" and replay_target_version == MCTS_TARGET_VERSION:
             selfplay_replay.load(replay_path)
             print(f"[train] resumed self-play replay buffer: size={len(selfplay_replay)}")
+        elif replay_kind == "selfplay_only":
+            print(
+                "[train] replay buffer target version mismatch; skipping resume load "
+                f"(found={replay_target_version or 'missing'} expected={MCTS_TARGET_VERSION})"
+            )
         elif teacher_paths:
             print(
                 "[train] legacy replay buffer detected; skipping resume load because teacher data "
@@ -820,11 +840,12 @@ def _main() -> None:
         f"batch={args.batch_size}, train_steps={args.train_steps}"
     )
     print(
-        "[train] teacher buffer={tb} selfplay buffer={sb} teacher_batch_ratio(start/end)={ts:.2f}/{te:.2f}".format(
+        "[train] teacher buffer={tb} selfplay buffer={sb} teacher_batch_ratio(start/end)={ts:.2f}/{te:.2f} selfplay_actor_mode={am}".format(
             tb=len(teacher_replay),
             sb=len(selfplay_replay),
             ts=float(args.teacher_batch_ratio_start),
             te=float(args.teacher_batch_ratio_end),
+            am=str(args.selfplay_actor_mode),
         )
     )
     print(f"[train] evaluator_backend={eval_core.EVALUATOR_BACKEND}")
@@ -877,13 +898,19 @@ def _main() -> None:
         actor_model = model
         actor_source = "latest"
         if best_ckpt_path.exists():
-            actor_model, _, _ = _load_model_and_optimizer(
-                best_ckpt_path,
-                device=device,
-                lr=float(args.lr),
+            actor_mode = str(args.selfplay_actor_mode)
+            use_best_actor = (
+                actor_mode == "best"
+                or (actor_mode == "alternate" and iteration % 2 == 0)
             )
-            actor_model.eval()
-            actor_source = "best"
+            if use_best_actor:
+                actor_model, _, _ = _load_model_and_optimizer(
+                    best_ckpt_path,
+                    device=device,
+                    lr=float(args.lr),
+                )
+                actor_model.eval()
+                actor_source = "best"
         else:
             model.eval()
 
@@ -958,6 +985,7 @@ def _main() -> None:
             "self_play_actor_source": actor_source,
             "self_play_seconds": float(selfplay_sec),
             "train_seconds": float(train_sec),
+            "mcts_target_version": MCTS_TARGET_VERSION,
             "created_at": _utc_now_iso(),
         }
         save_checkpoint(model, optimizer, latest_ckpt_path, metadata=latest_meta)
@@ -967,6 +995,7 @@ def _main() -> None:
                 "buffer_kind": "selfplay_only",
                 "teacher_buffer_size": int(len(teacher_replay)),
                 "selfplay_buffer_size": int(len(selfplay_replay)),
+                "mcts_target_version": MCTS_TARGET_VERSION,
             },
         )
 
@@ -1185,6 +1214,7 @@ def _main() -> None:
                 "teacher_batch_ratio_start": float(args.teacher_batch_ratio_start),
                 "teacher_batch_ratio_end": float(args.teacher_batch_ratio_end),
                 "teacher_batch_ratio_current": float(teacher_batch_ratio),
+                "selfplay_actor_mode": str(args.selfplay_actor_mode),
                 "updated_at": _utc_now_iso(),
             }
         )

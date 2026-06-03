@@ -1,7 +1,14 @@
 import numpy as np
 
 from azlite.board import apply_move, legal_moves
-from azlite.puct_mcts import Evaluator, HeuristicEvaluator, UniformEvaluator, run_mcts
+from azlite.puct_mcts import (
+    Evaluator,
+    HeuristicEvaluator,
+    MCTSNode,
+    UniformEvaluator,
+    _select_child,
+    run_mcts,
+)
 
 
 def _empty_board():
@@ -147,6 +154,29 @@ def test_backprop_value_sign_flip():
     visited_children = [ch for ch in root.children.values() if ch.visit_count > 0]
     assert len(visited_children) >= 1
     assert visited_children[0].value_sum > 0
+
+
+def test_selection_uses_parent_perspective_for_child_q():
+    board = _empty_board()
+    root = MCTSNode(board=board, current_player=1, visit_count=16, is_expanded=True)
+
+    # Child current_player is the opponent of root.current_player.
+    # Negative child.q_value means the child player dislikes the position,
+    # so the root player should prefer it.
+    good_for_root = MCTSNode(board=board.copy(), current_player=2, parent=root, prior=0.5)
+    good_for_root.visit_count = 8
+    good_for_root.value_sum = -6.0  # q = -0.75 from child/opponent perspective
+
+    bad_for_root = MCTSNode(board=board.copy(), current_player=2, parent=root, prior=0.5)
+    bad_for_root.visit_count = 8
+    bad_for_root.value_sum = 6.0  # q = +0.75 from child/opponent perspective
+
+    root.children[3] = good_for_root
+    root.children[2] = bad_for_root
+
+    action, child = _select_child(root, c_puct=0.0)
+    assert action == 3
+    assert child is good_for_root
 
 
 def test_root_visit_count_matches_simulations():

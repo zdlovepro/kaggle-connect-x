@@ -29,6 +29,7 @@ from azlite.puct_mcts import run_mcts
 
 ROWS = 6
 COLS = 7
+MCTS_TARGET_VERSION = "puct_parent_perspective_v2"
 
 
 @dataclass
@@ -295,6 +296,7 @@ def generate_self_play_games(
         "augment_mirror": bool(augment),
         "dirichlet_noise": bool(add_dirichlet_noise),
         "use_tactical_shortcuts": bool(use_tactical_shortcuts),
+        "mcts_target_version": MCTS_TARGET_VERSION,
         "created_at": _utc_now_iso(),
     }
 
@@ -391,4 +393,3 @@ def _main() -> None:
 
 if __name__ == "__main__":
     _main()
-
