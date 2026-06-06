@@ -101,6 +101,36 @@ def board_to_bitboards(
     return b1, b2
 
 
+def board_to_bitboards_and_heights(
+    board: np.ndarray | Sequence[Sequence[int]],
+    rows: int = DEFAULT_ROWS,
+    columns: int = DEFAULT_COLUMNS,
+) -> Tuple[np.uint64, np.uint64, np.ndarray]:
+    """Convert board to (player1_bb, player2_bb, column_heights).
+
+    This is the stable helper for search/training code that needs both the
+    bitboards and per-column heights without depending on private helpers from
+    runtime submission files or agent internals.
+    """
+    arr = _as_board_array(board)
+    if arr.shape != (rows, columns):
+        raise ValueError(f"board shape mismatch: expected {(rows, columns)}, got {arr.shape}")
+
+    b1, b2 = board_to_bitboards(arr, rows=rows, columns=columns)
+    if (
+        _shared_bitboard is not None
+        and rows == _shared_bitboard.ROWS
+        and columns == _shared_bitboard.COLS
+    ):
+        heights = _shared_bitboard.get_heights_from_list(numpy_to_obs_board(arr))
+        return b1, b2, np.asarray(heights, dtype=np.int32)
+
+    heights = np.zeros(columns, dtype=np.int32)
+    for c in range(columns):
+        heights[c] = int(np.count_nonzero(arr[:, c]))
+    return b1, b2, heights
+
+
 def legal_moves(board: np.ndarray | Sequence[Sequence[int]]) -> List[int]:
     arr = _as_board_array(board)
     return [c for c in range(arr.shape[1]) if arr[0, c] == 0]
@@ -310,6 +340,7 @@ __all__ = [
     "DEFAULT_ROWS",
     "apply_move",
     "board_to_bitboards",
+    "board_to_bitboards_and_heights",
     "board_to_current_player_tensor",
     "center_first_order",
     "check_win",

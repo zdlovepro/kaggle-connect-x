@@ -1,0 +1,2594 @@
+[
+  {
+    "created_at": "2026-06-05T17:34:51.719080+00:00",
+    "label": "bootstrap_pretrained",
+    "evaluator_backend": "local_turn_engine_v2",
+    "eval_profile": "kaggle_like",
+    "candidate_checkpoint": "D:\\205zd\\Desktop\\Kaggle\\checkpoints\\azlite_pretrained.pt",
+    "checkpoint": "D:\\205zd\\Desktop\\Kaggle\\checkpoints\\azlite_pretrained.pt",
+    "previous_best_checkpoint": null,
+    "opponents": [
+      "random",
+      "negamax",
+      "mcts_lite"
+    ],
+    "reliable": true,
+    "unreliable_reasons": [],
+    "previous_best_available": false,
+    "side_bias_warning": false,
+    "unstable_previous_best_eval": false,
+    "candidate_results": {
+      "random": {
+        "evaluator_backend": "local_turn_engine_v2",
+        "eval_profile": "kaggle_like",
+        "agent_a": "checkpoint_puct",
+        "agent_b": "random",
+        "games": 30,
+        "num_games": 30,
+        "swap_sides": true,
+        "wins": 30,
+        "losses": 0,
+        "draws": 0,
+        "win_rate": 1.0,
+        "reliable_win_rate": 1.0,
+        "reliable_games": 30,
+        "reliable_wins": 30,
+        "reliable_losses": 0,
+        "reliable_draws": 0,
+        "first_player_games": 15,
+        "first_player_wins": 15,
+        "first_player_losses": 0,
+        "first_player_draws": 0,
+        "first_player_win_rate": 1.0,
+        "second_player_games": 15,
+        "second_player_wins": 15,
+        "second_player_losses": 0,
+        "second_player_draws": 0,
+        "second_player_win_rate": 1.0,
+        "side_bias": 0.0,
+        "candidate_timeout_moves": 0,
+        "opponent_timeout_moves": 0,
+        "candidate_timeout_games": 0,
+        "opponent_timeout_games": 0,
+        "candidate_timeouts": 0,
+        "opponent_timeouts": 0,
+        "candidate_timeout_rate": 0.0,
+        "opponent_timeout_rate": 0.0,
+        "candidate_timeout_ms": 2000.0,
+        "opponent_timeout_ms": 2000.0,
+        "candidate_avg_move_ms": 53.58016420491781,
+        "candidate_max_move_ms": 123.24169999919832,
+        "opponent_avg_move_ms": 0.008442859246355036,
+        "opponent_max_move_ms": 0.018299906514585018,
+        "invalid_actions": {
+          "candidate": 0,
+          "opponent": 0,
+          "total": 0
+        },
+        "timeout_result_policy": "fail_eval",
+        "reliable": true,
+        "unreliable_reasons": [],
+        "reliability": {
+          "reliable": true,
+          "reliable_win_rate": 1.0,
+          "warning": null,
+          "candidate_timeout_rate": 0.0,
+          "opponent_timeout_rate": 0.0,
+          "max_candidate_timeout_rate": 0.01,
+          "max_opponent_timeout_rate": 0.05
+        },
+        "illegal_actions": {
+          "agent_a": 0,
+          "agent_b": 0,
+          "total": 0
+        },
+        "timeouts": {
+          "agent_a": 0,
+          "agent_b": 0,
+          "total": 0
+        },
+        "errors": {
+          "agent_a": 0,
+          "agent_b": 0,
+          "total": 0
+        },
+        "avg_steps": 11.233333333333333,
+        "avg_step_time_sec": {
+          "agent_a": 0.053580164204917805,
+          "agent_b": 8.442859246355036e-06
+        },
+        "p95_step_time_sec": {
+          "agent_a": 0.08172537497011945,
+          "agent_b": 1.170008908957243e-05
+        },
+        "step_time_sum_sec": {
+          "agent_a": 9.430108900065534,
+          "agent_b": 0.0013593003386631608
+        },
+        "step_count": {
+          "agent_a": 176,
+          "agent_b": 161
+        },
+        "opponent": "random"
+      },
+      "negamax": {
+        "evaluator_backend": "local_turn_engine_v2",
+        "eval_profile": "kaggle_like",
+        "agent_a": "checkpoint_puct",
+        "agent_b": "negamax",
+        "games": 80,
+        "num_games": 80,
+        "swap_sides": true,
+        "wins": 54,
+        "losses": 24,
+        "draws": 2,
+        "win_rate": 0.675,
+        "reliable_win_rate": 0.675,
+        "reliable_games": 80,
+        "reliable_wins": 54,
+        "reliable_losses": 24,
+        "reliable_draws": 2,
+        "first_player_games": 40,
+        "first_player_wins": 29,
+        "first_player_losses": 10,
+        "first_player_draws": 1,
+        "first_player_win_rate": 0.725,
+        "second_player_games": 40,
+        "second_player_wins": 25,
+        "second_player_losses": 14,
+        "second_player_draws": 1,
+        "second_player_win_rate": 0.625,
+        "side_bias": 0.09999999999999998,
+        "candidate_timeout_moves": 0,
+        "opponent_timeout_moves": 0,
+        "candidate_timeout_games": 0,
+        "opponent_timeout_games": 0,
+        "candidate_timeouts": 0,
+        "opponent_timeouts": 0,
+        "candidate_timeout_rate": 0.0,
+        "opponent_timeout_rate": 0.0,
+        "candidate_timeout_ms": 2000.0,
+        "opponent_timeout_ms": 2000.0,
+        "candidate_avg_move_ms": 53.229001437559226,
+        "candidate_max_move_ms": 174.2244999622926,
+        "opponent_avg_move_ms": 966.8172806122329,
+        "opponent_max_move_ms": 1834.4329000683501,
+        "invalid_actions": {
+          "candidate": 0,
+          "opponent": 0,
+          "total": 0
+        },
+        "timeout_result_policy": "fail_eval",
+        "reliable": true,
+        "unreliable_reasons": [],
+        "reliability": {
+          "reliable": true,
+          "reliable_win_rate": 0.675,
+          "warning": null,
+          "candidate_timeout_rate": 0.0,
+          "opponent_timeout_rate": 0.0,
+          "max_candidate_timeout_rate": 0.01,
+          "max_opponent_timeout_rate": 0.05
+        },
+        "illegal_actions": {
+          "agent_a": 0,
+          "agent_b": 0,
+          "total": 0
+        },
+        "timeouts": {
+          "agent_a": 0,
+          "agent_b": 0,
+          "total": 0
+        },
+        "errors": {
+          "agent_a": 0,
+          "agent_b": 0,
+          "total": 0
+        },
+        "avg_steps": 20.6875,
+        "avg_step_time_sec": {
+          "agent_a": 0.05322900143755923,
+          "agent_b": 0.9668172806122329
+        },
+        "p95_step_time_sec": {
+          "agent_a": 0.0809681000537239,
+          "agent_b": 1.8253214600437786
+        },
+        "step_time_sum_sec": {
+          "agent_a": 44.44621620036196,
+          "agent_b": 792.790170102031
+        },
+        "step_count": {
+          "agent_a": 835,
+          "agent_b": 820
+        },
+        "opponent": "negamax"
+      }
+    },
+    "previous_best_results": null,
+    "composite": {
+      "score": 0.6966666666666667,
+      "weights": {
+        "random": 0.03,
+        "negamax": 0.42,
+        "mcts_lite": 0.3,
+        "previous_best": 0.25
+      },
+      "components": {
+        "random": {
+          "configured_weight": 0.03,
+          "normalized_weight": 0.06666666666666667,
+          "present": true,
+          "reliable": true,
+          "included": true,
+          "win_rate": 1.0,
+          "status": "included"
+        },
+        "negamax": {
+          "configured_weight": 0.42,
+          "normalized_weight": 0.9333333333333333,
+          "present": true,
+          "reliable": true,
+          "included": true,
+          "win_rate": 0.675,
+          "status": "included"
+        },
+        "mcts_lite": {
+          "configured_weight": 0.3,
+          "normalized_weight": 0.0,
+          "present": false,
+          "reliable": false,
+          "included": false,
+          "win_rate": null,
+          "status": "missing"
+        },
+        "previous_best": {
+          "configured_weight": 0.25,
+          "normalized_weight": 0.0,
+          "present": false,
+          "reliable": false,
+          "included": false,
+          "win_rate": null,
+          "status": "missing"
+        }
+      },
+      "included_weight_sum": 0.44999999999999996,
+      "all_key_metrics_unreliable": false,
+      "key_metrics": [
+        "negamax",
+        "mcts_lite",
+        "previous_best"
+      ]
+    },
+    "gating": {
+      "passed": true,
+      "reasons": [
+        "mcts_lite evaluation skipped/missing (diagnostic-only this run)"
+      ],
+      "warning": null,
+      "reliability_warnings": []
+    },
+    "config": {
+      "games": 200,
+      "games_by_opponent": {
+        "default": 200,
+        "random": 30,
+        "negamax": 80,
+        "mcts_lite": 0,
+        "previous_best": 100
+      },
+      "simulations": 96,
+      "device": "cpu",
+      "seed": 42,
+      "eval_profile": "kaggle_like",
+      "candidate_timeout_ms": 2000.0,
+      "opponent_timeout_ms": 2000.0,
+      "max_opponent_timeout_rate": 0.05,
+      "max_candidate_timeout_rate": 0.01,
+      "timeout_result_policy": "fail_eval"
+    },
+    "log_paths": {
+      "json": "D:\\205zd\\Desktop\\Kaggle\\logs\\azlite_train\\pipeline_eval_bootstrap_pretrained_20260606_013451.json",
+      "markdown": "D:\\205zd\\Desktop\\Kaggle\\logs\\azlite_train\\pipeline_eval_bootstrap_pretrained_20260606_013451.md"
+    }
+  },
+  {
+    "created_at": "2026-06-06T00:05:49.598595+00:00",
+    "label": "final_latest_eval",
+    "evaluator_backend": "local_turn_engine_v2",
+    "eval_profile": "kaggle_like",
+    "candidate_checkpoint": "D:\\205zd\\Desktop\\Kaggle\\checkpoints\\azlite_train\\latest.pt",
+    "checkpoint": "D:\\205zd\\Desktop\\Kaggle\\checkpoints\\azlite_train\\latest.pt",
+    "previous_best_checkpoint": "D:\\205zd\\Desktop\\Kaggle\\checkpoints\\azlite_train\\archived_best\\previous_best_snapshot_iter0030.pt",
+    "opponents": [
+      "random",
+      "negamax",
+      "mcts_lite"
+    ],
+    "reliable": true,
+    "unreliable_reasons": [],
+    "previous_best_available": true,
+    "side_bias_warning": false,
+    "unstable_previous_best_eval": false,
+    "candidate_results": {
+      "random": {
+        "evaluator_backend": "local_turn_engine_v2",
+        "eval_profile": "kaggle_like",
+        "agent_a": "checkpoint_puct",
+        "agent_b": "random",
+        "games": 30,
+        "num_games": 30,
+        "swap_sides": true,
+        "wins": 30,
+        "losses": 0,
+        "draws": 0,
+        "win_rate": 1.0,
+        "reliable_win_rate": 1.0,
+        "reliable_games": 30,
+        "reliable_wins": 30,
+        "reliable_losses": 0,
+        "reliable_draws": 0,
+        "first_player_games": 15,
+        "first_player_wins": 15,
+        "first_player_losses": 0,
+        "first_player_draws": 0,
+        "first_player_win_rate": 1.0,
+        "second_player_games": 15,
+        "second_player_wins": 15,
+        "second_player_losses": 0,
+        "second_player_draws": 0,
+        "second_player_win_rate": 1.0,
+        "side_bias": 0.0,
+        "candidate_timeout_moves": 0,
+        "opponent_timeout_moves": 0,
+        "candidate_timeout_games": 0,
+        "opponent_timeout_games": 0,
+        "candidate_timeouts": 0,
+        "opponent_timeouts": 0,
+        "candidate_timeout_rate": 0.0,
+        "opponent_timeout_rate": 0.0,
+        "candidate_timeout_ms": 2000.0,
+        "opponent_timeout_ms": 2000.0,
+        "candidate_avg_move_ms": 62.11899387000023,
+        "candidate_max_move_ms": 143.9085000893101,
+        "opponent_avg_move_ms": 0.008726397973631844,
+        "opponent_max_move_ms": 0.014299992471933365,
+        "invalid_actions": {
+          "candidate": 0,
+          "opponent": 0,
+          "total": 0
+        },
+        "timeout_result_policy": "fail_eval",
+        "reliable": true,
+        "unreliable_reasons": [],
+        "reliability": {
+          "reliable": true,
+          "reliable_win_rate": 1.0,
+          "warning": null,
+          "candidate_timeout_rate": 0.0,
+          "opponent_timeout_rate": 0.0,
+          "max_candidate_timeout_rate": 0.01,
+          "max_opponent_timeout_rate": 0.05
+        },
+        "illegal_actions": {
+          "agent_a": 0,
+          "agent_b": 0,
+          "total": 0
+        },
+        "timeouts": {
+          "agent_a": 0,
+          "agent_b": 0,
+          "total": 0
+        },
+        "errors": {
+          "agent_a": 0,
+          "agent_b": 0,
+          "total": 0
+        },
+        "avg_steps": 13.633333333333333,
+        "avg_step_time_sec": {
+          "agent_a": 0.06211899387000023,
+          "agent_b": 8.726397973631844e-06
+        },
+        "p95_step_time_sec": {
+          "agent_a": 0.07997812503017485,
+          "agent_b": 1.2120069004595279e-05
+        },
+        "step_time_sum_sec": {
+          "agent_a": 13.16922670044005,
+          "agent_b": 0.0017191004008054733
+        },
+        "step_count": {
+          "agent_a": 212,
+          "agent_b": 197
+        },
+        "opponent": "random"
+      },
+      "negamax": {
+        "evaluator_backend": "local_turn_engine_v2",
+        "eval_profile": "kaggle_like",
+        "agent_a": "checkpoint_puct",
+        "agent_b": "negamax",
+        "games": 80,
+        "num_games": 80,
+        "swap_sides": true,
+        "wins": 80,
+        "losses": 0,
+        "draws": 0,
+        "win_rate": 1.0,
+        "reliable_win_rate": 1.0,
+        "reliable_games": 80,
+        "reliable_wins": 80,
+        "reliable_losses": 0,
+        "reliable_draws": 0,
+        "first_player_games": 40,
+        "first_player_wins": 40,
+        "first_player_losses": 0,
+        "first_player_draws": 0,
+        "first_player_win_rate": 1.0,
+        "second_player_games": 40,
+        "second_player_wins": 40,
+        "second_player_losses": 0,
+        "second_player_draws": 0,
+        "second_player_win_rate": 1.0,
+        "side_bias": 0.0,
+        "candidate_timeout_moves": 0,
+        "opponent_timeout_moves": 0,
+        "candidate_timeout_games": 0,
+        "opponent_timeout_games": 0,
+        "candidate_timeouts": 0,
+        "opponent_timeouts": 0,
+        "candidate_timeout_rate": 0.0,
+        "opponent_timeout_rate": 0.0,
+        "candidate_timeout_ms": 2000.0,
+        "opponent_timeout_ms": 2000.0,
+        "candidate_avg_move_ms": 116.66410659724343,
+        "candidate_max_move_ms": 524.1931000491604,
+        "opponent_avg_move_ms": 1020.7576951145498,
+        "opponent_max_move_ms": 1956.9819999160245,
+        "invalid_actions": {
+          "candidate": 0,
+          "opponent": 0,
+          "total": 0
+        },
+        "timeout_result_policy": "fail_eval",
+        "reliable": true,
+        "unreliable_reasons": [],
+        "reliability": {
+          "reliable": true,
+          "reliable_win_rate": 1.0,
+          "warning": null,
+          "candidate_timeout_rate": 0.0,
+          "opponent_timeout_rate": 0.0,
+          "max_candidate_timeout_rate": 0.01,
+          "max_opponent_timeout_rate": 0.05
+        },
+        "illegal_actions": {
+          "agent_a": 0,
+          "agent_b": 0,
+          "total": 0
+        },
+        "timeouts": {
+          "agent_a": 0,
+          "agent_b": 0,
+          "total": 0
+        },
+        "errors": {
+          "agent_a": 0,
+          "agent_b": 0,
+          "total": 0
+        },
+        "avg_steps": 21.475,
+        "avg_step_time_sec": {
+          "agent_a": 0.11666410659724344,
+          "agent_b": 1.0207576951145498
+        },
+        "p95_step_time_sec": {
+          "agent_a": 0.3917685100226661,
+          "agent_b": 1.8370822899858468
+        },
+        "step_time_sum_sec": {
+          "agent_a": 102.54774969897699,
+          "agent_b": 856.4157062011072
+        },
+        "step_count": {
+          "agent_a": 879,
+          "agent_b": 839
+        },
+        "opponent": "negamax"
+      },
+      "previous_best": {
+        "evaluator_backend": "local_turn_engine_v2",
+        "eval_profile": "kaggle_like",
+        "agent_a": "checkpoint_puct",
+        "agent_b": "checkpoint_puct",
+        "games": 100,
+        "num_games": 100,
+        "swap_sides": true,
+        "wins": 100,
+        "losses": 0,
+        "draws": 0,
+        "win_rate": 1.0,
+        "reliable_win_rate": 1.0,
+        "reliable_games": 100,
+        "reliable_wins": 100,
+        "reliable_losses": 0,
+        "reliable_draws": 0,
+        "first_player_games": 50,
+        "first_player_wins": 50,
+        "first_player_losses": 0,
+        "first_player_draws": 0,
+        "first_player_win_rate": 1.0,
+        "second_player_games": 50,
+        "second_player_wins": 50,
+        "second_player_losses": 0,
+        "second_player_draws": 0,
+        "second_player_win_rate": 1.0,
+        "side_bias": 0.0,
+        "candidate_timeout_moves": 0,
+        "opponent_timeout_moves": 0,
+        "candidate_timeout_games": 0,
+        "opponent_timeout_games": 0,
+        "candidate_timeouts": 0,
+        "opponent_timeouts": 0,
+        "candidate_timeout_rate": 0.0,
+        "opponent_timeout_rate": 0.0,
+        "candidate_timeout_ms": 2000.0,
+        "opponent_timeout_ms": 2000.0,
+        "candidate_avg_move_ms": 299.3489539479886,
+        "candidate_max_move_ms": 787.8264000173658,
+        "opponent_avg_move_ms": 276.4157929732716,
+        "opponent_max_move_ms": 754.0151999564841,
+        "invalid_actions": {
+          "candidate": 0,
+          "opponent": 0,
+          "total": 0
+        },
+        "timeout_result_policy": "fail_eval",
+        "reliable": true,
+        "unreliable_reasons": [],
+        "reliability": {
+          "reliable": true,
+          "reliable_win_rate": 1.0,
+          "warning": null,
+          "candidate_timeout_rate": 0.0,
+          "opponent_timeout_rate": 0.0,
+          "max_candidate_timeout_rate": 0.01,
+          "max_opponent_timeout_rate": 0.05
+        },
+        "illegal_actions": {
+          "agent_a": 0,
+          "agent_b": 0,
+          "total": 0
+        },
+        "timeouts": {
+          "agent_a": 0,
+          "agent_b": 0,
+          "total": 0
+        },
+        "errors": {
+          "agent_a": 0,
+          "agent_b": 0,
+          "total": 0
+        },
+        "avg_steps": 37.5,
+        "avg_step_time_sec": {
+          "agent_a": 0.2993489539479886,
+          "agent_b": 0.2764157929732716
+        },
+        "p95_step_time_sec": {
+          "agent_a": 0.471271805051947,
+          "agent_b": 0.4745442249986809
+        },
+        "step_time_sum_sec": {
+          "agent_a": 568.7630125011783,
+          "agent_b": 511.36921700055245
+        },
+        "step_count": {
+          "agent_a": 1900,
+          "agent_b": 1850
+        },
+        "opponent": "previous_best"
+      }
+    },
+    "previous_best_results": {
+      "random": {
+        "evaluator_backend": "local_turn_engine_v2",
+        "eval_profile": "kaggle_like",
+        "agent_a": "checkpoint_puct",
+        "agent_b": "random",
+        "games": 30,
+        "num_games": 30,
+        "swap_sides": true,
+        "wins": 30,
+        "losses": 0,
+        "draws": 0,
+        "win_rate": 1.0,
+        "reliable_win_rate": 1.0,
+        "reliable_games": 30,
+        "reliable_wins": 30,
+        "reliable_losses": 0,
+        "reliable_draws": 0,
+        "first_player_games": 15,
+        "first_player_wins": 15,
+        "first_player_losses": 0,
+        "first_player_draws": 0,
+        "first_player_win_rate": 1.0,
+        "second_player_games": 15,
+        "second_player_wins": 15,
+        "second_player_losses": 0,
+        "second_player_draws": 0,
+        "second_player_win_rate": 1.0,
+        "side_bias": 0.0,
+        "candidate_timeout_moves": 0,
+        "opponent_timeout_moves": 0,
+        "candidate_timeout_games": 0,
+        "opponent_timeout_games": 0,
+        "candidate_timeouts": 0,
+        "opponent_timeouts": 0,
+        "candidate_timeout_rate": 0.0,
+        "opponent_timeout_rate": 0.0,
+        "candidate_timeout_ms": 2000.0,
+        "opponent_timeout_ms": 2000.0,
+        "candidate_avg_move_ms": 334.3982718724874,
+        "candidate_max_move_ms": 556.2994000501931,
+        "opponent_avg_move_ms": 0.02951448108872463,
+        "opponent_max_move_ms": 0.12500002048909664,
+        "invalid_actions": {
+          "candidate": 0,
+          "opponent": 0,
+          "total": 0
+        },
+        "timeout_result_policy": "fail_eval",
+        "reliable": true,
+        "unreliable_reasons": [],
+        "reliability": {
+          "reliable": true,
+          "reliable_win_rate": 1.0,
+          "warning": null,
+          "candidate_timeout_rate": 0.0,
+          "opponent_timeout_rate": 0.0,
+          "max_candidate_timeout_rate": 0.01,
+          "max_opponent_timeout_rate": 0.05
+        },
+        "illegal_actions": {
+          "agent_a": 0,
+          "agent_b": 0,
+          "total": 0
+        },
+        "timeouts": {
+          "agent_a": 0,
+          "agent_b": 0,
+          "total": 0
+        },
+        "errors": {
+          "agent_a": 0,
+          "agent_b": 0,
+          "total": 0
+        },
+        "avg_steps": 10.166666666666666,
+        "avg_step_time_sec": {
+          "agent_a": 0.3343982718724874,
+          "agent_b": 2.951448108872463e-05
+        },
+        "p95_step_time_sec": {
+          "agent_a": 0.48794323491747493,
+          "agent_b": 3.7600053474307053e-05
+        },
+        "step_time_sum_sec": {
+          "agent_a": 53.50372349959798,
+          "agent_b": 0.004279599757865071
+        },
+        "step_count": {
+          "agent_a": 160,
+          "agent_b": 145
+        },
+        "opponent": "random"
+      },
+      "negamax": {
+        "evaluator_backend": "local_turn_engine_v2",
+        "eval_profile": "kaggle_like",
+        "agent_a": "checkpoint_puct",
+        "agent_b": "negamax",
+        "games": 80,
+        "num_games": 80,
+        "swap_sides": true,
+        "wins": 78,
+        "losses": 2,
+        "draws": 0,
+        "win_rate": 0.975,
+        "reliable_win_rate": 0.975,
+        "reliable_games": 80,
+        "reliable_wins": 78,
+        "reliable_losses": 2,
+        "reliable_draws": 0,
+        "first_player_games": 40,
+        "first_player_wins": 40,
+        "first_player_losses": 0,
+        "first_player_draws": 0,
+        "first_player_win_rate": 1.0,
+        "second_player_games": 40,
+        "second_player_wins": 38,
+        "second_player_losses": 2,
+        "second_player_draws": 0,
+        "second_player_win_rate": 0.95,
+        "side_bias": 0.050000000000000044,
+        "candidate_timeout_moves": 0,
+        "opponent_timeout_moves": 1,
+        "candidate_timeout_games": 0,
+        "opponent_timeout_games": 1,
+        "candidate_timeouts": 0,
+        "opponent_timeouts": 1,
+        "candidate_timeout_rate": 0.0,
+        "opponent_timeout_rate": 0.0125,
+        "candidate_timeout_ms": 2000.0,
+        "opponent_timeout_ms": 2000.0,
+        "candidate_avg_move_ms": 330.597896761347,
+        "candidate_max_move_ms": 728.1204999890178,
+        "opponent_avg_move_ms": 1010.7179889660167,
+        "opponent_max_move_ms": 2004.3486999347806,
+        "invalid_actions": {
+          "candidate": 0,
+          "opponent": 0,
+          "total": 0
+        },
+        "timeout_result_policy": "fail_eval",
+        "reliable": true,
+        "unreliable_reasons": [],
+        "reliability": {
+          "reliable": true,
+          "reliable_win_rate": 0.975,
+          "warning": null,
+          "candidate_timeout_rate": 0.0,
+          "opponent_timeout_rate": 0.0125,
+          "max_candidate_timeout_rate": 0.01,
+          "max_opponent_timeout_rate": 0.05
+        },
+        "illegal_actions": {
+          "agent_a": 0,
+          "agent_b": 0,
+          "total": 0
+        },
+        "timeouts": {
+          "agent_a": 0,
+          "agent_b": 1,
+          "total": 1
+        },
+        "errors": {
+          "agent_a": 0,
+          "agent_b": 0,
+          "total": 0
+        },
+        "avg_steps": 14.95,
+        "avg_step_time_sec": {
+          "agent_a": 0.330597896761347,
+          "agent_b": 1.0107179889660167
+        },
+        "p95_step_time_sec": {
+          "agent_a": 0.4896287599345669,
+          "agent_b": 1.941685895109549
+        },
+        "step_time_sum_sec": {
+          "agent_a": 203.97890230175108,
+          "agent_b": 586.2164336002897
+        },
+        "step_count": {
+          "agent_a": 617,
+          "agent_b": 580
+        },
+        "opponent": "negamax"
+      }
+    },
+    "composite": {
+      "score": 1.0,
+      "weights": {
+        "random": 0.03,
+        "negamax": 0.42,
+        "mcts_lite": 0.3,
+        "previous_best": 0.25
+      },
+      "components": {
+        "random": {
+          "configured_weight": 0.03,
+          "normalized_weight": 0.04285714285714286,
+          "present": true,
+          "reliable": true,
+          "included": true,
+          "win_rate": 1.0,
+          "status": "included"
+        },
+        "negamax": {
+          "configured_weight": 0.42,
+          "normalized_weight": 0.6,
+          "present": true,
+          "reliable": true,
+          "included": true,
+          "win_rate": 1.0,
+          "status": "included"
+        },
+        "mcts_lite": {
+          "configured_weight": 0.3,
+          "normalized_weight": 0.0,
+          "present": false,
+          "reliable": false,
+          "included": false,
+          "win_rate": null,
+          "status": "missing"
+        },
+        "previous_best": {
+          "configured_weight": 0.25,
+          "normalized_weight": 0.35714285714285715,
+          "present": true,
+          "reliable": true,
+          "included": true,
+          "win_rate": 1.0,
+          "status": "included"
+        }
+      },
+      "included_weight_sum": 0.7,
+      "all_key_metrics_unreliable": false,
+      "key_metrics": [
+        "negamax",
+        "mcts_lite",
+        "previous_best"
+      ]
+    },
+    "gating": {
+      "passed": true,
+      "reasons": [
+        "mcts_lite evaluation skipped/missing (diagnostic-only this run)"
+      ],
+      "warning": null,
+      "reliability_warnings": []
+    },
+    "config": {
+      "games": 200,
+      "games_by_opponent": {
+        "default": 200,
+        "random": 30,
+        "negamax": 80,
+        "mcts_lite": 0,
+        "previous_best": 100
+      },
+      "simulations": 96,
+      "device": "cpu",
+      "seed": 119,
+      "eval_profile": "kaggle_like",
+      "candidate_timeout_ms": 2000.0,
+      "opponent_timeout_ms": 2000.0,
+      "max_opponent_timeout_rate": 0.05,
+      "max_candidate_timeout_rate": 0.01,
+      "timeout_result_policy": "fail_eval"
+    },
+    "log_paths": {
+      "json": "D:\\205zd\\Desktop\\Kaggle\\logs\\azlite_train\\pipeline_eval_final_latest_eval_20260606_080549.json",
+      "markdown": "D:\\205zd\\Desktop\\Kaggle\\logs\\azlite_train\\pipeline_eval_final_latest_eval_20260606_080549.md"
+    }
+  },
+  {
+    "created_at": "2026-06-06T01:35:54.905003+00:00",
+    "label": "final_latest_eval_strong_local",
+    "evaluator_backend": "local_turn_engine_v2",
+    "eval_profile": "strong_local",
+    "candidate_checkpoint": "D:\\205zd\\Desktop\\Kaggle\\checkpoints\\azlite_train\\latest.pt",
+    "checkpoint": "D:\\205zd\\Desktop\\Kaggle\\checkpoints\\azlite_train\\latest.pt",
+    "previous_best_checkpoint": "D:\\205zd\\Desktop\\Kaggle\\checkpoints\\azlite_train\\archived_best\\previous_best_snapshot_iter0030.pt",
+    "opponents": [
+      "random",
+      "negamax",
+      "mcts_lite"
+    ],
+    "reliable": true,
+    "unreliable_reasons": [],
+    "previous_best_available": true,
+    "side_bias_warning": false,
+    "unstable_previous_best_eval": false,
+    "candidate_results": {
+      "random": {
+        "evaluator_backend": "local_turn_engine_v2",
+        "eval_profile": "strong_local",
+        "agent_a": "checkpoint_puct",
+        "agent_b": "random",
+        "games": 30,
+        "num_games": 30,
+        "swap_sides": true,
+        "wins": 30,
+        "losses": 0,
+        "draws": 0,
+        "win_rate": 1.0,
+        "reliable_win_rate": 1.0,
+        "reliable_games": 30,
+        "reliable_wins": 30,
+        "reliable_losses": 0,
+        "reliable_draws": 0,
+        "first_player_games": 15,
+        "first_player_wins": 15,
+        "first_player_losses": 0,
+        "first_player_draws": 0,
+        "first_player_win_rate": 1.0,
+        "second_player_games": 15,
+        "second_player_wins": 15,
+        "second_player_losses": 0,
+        "second_player_draws": 0,
+        "second_player_win_rate": 1.0,
+        "side_bias": 0.0,
+        "candidate_timeout_moves": 0,
+        "opponent_timeout_moves": 0,
+        "candidate_timeout_games": 0,
+        "opponent_timeout_games": 0,
+        "candidate_timeouts": 0,
+        "opponent_timeouts": 0,
+        "candidate_timeout_rate": 0.0,
+        "opponent_timeout_rate": 0.0,
+        "candidate_timeout_ms": 2000.0,
+        "opponent_timeout_ms": 5000.0,
+        "candidate_avg_move_ms": 361.19031844083116,
+        "candidate_max_move_ms": 530.3909999784082,
+        "opponent_avg_move_ms": 0.031031707937761055,
+        "opponent_max_move_ms": 0.24940003640949726,
+        "invalid_actions": {
+          "candidate": 0,
+          "opponent": 0,
+          "total": 0
+        },
+        "timeout_result_policy": "fail_eval",
+        "reliable": true,
+        "unreliable_reasons": [],
+        "reliability": {
+          "reliable": true,
+          "reliable_win_rate": 1.0,
+          "warning": null,
+          "candidate_timeout_rate": 0.0,
+          "opponent_timeout_rate": 0.0,
+          "max_candidate_timeout_rate": 0.01,
+          "max_opponent_timeout_rate": 0.05
+        },
+        "illegal_actions": {
+          "agent_a": 0,
+          "agent_b": 0,
+          "total": 0
+        },
+        "timeouts": {
+          "agent_a": 0,
+          "agent_b": 0,
+          "total": 0
+        },
+        "errors": {
+          "agent_a": 0,
+          "agent_b": 0,
+          "total": 0
+        },
+        "avg_steps": 11.433333333333334,
+        "avg_step_time_sec": {
+          "agent_a": 0.36119031844083116,
+          "agent_b": 3.1031707937761054e-05
+        },
+        "p95_step_time_sec": {
+          "agent_a": 0.488948890089523,
+          "agent_b": 3.648502752184868e-05
+        },
+        "step_time_sum_sec": {
+          "agent_a": 64.65306700090878,
+          "agent_b": 0.005089200101792812
+        },
+        "step_count": {
+          "agent_a": 179,
+          "agent_b": 164
+        },
+        "opponent": "random"
+      },
+      "negamax": {
+        "evaluator_backend": "local_turn_engine_v2",
+        "eval_profile": "strong_local",
+        "agent_a": "checkpoint_puct",
+        "agent_b": "negamax",
+        "games": 80,
+        "num_games": 80,
+        "swap_sides": true,
+        "wins": 77,
+        "losses": 3,
+        "draws": 0,
+        "win_rate": 0.9625,
+        "reliable_win_rate": 0.9625,
+        "reliable_games": 80,
+        "reliable_wins": 77,
+        "reliable_losses": 3,
+        "reliable_draws": 0,
+        "first_player_games": 40,
+        "first_player_wins": 39,
+        "first_player_losses": 1,
+        "first_player_draws": 0,
+        "first_player_win_rate": 0.975,
+        "second_player_games": 40,
+        "second_player_wins": 38,
+        "second_player_losses": 2,
+        "second_player_draws": 0,
+        "second_player_win_rate": 0.95,
+        "side_bias": 0.025000000000000022,
+        "candidate_timeout_moves": 0,
+        "opponent_timeout_moves": 0,
+        "candidate_timeout_games": 0,
+        "opponent_timeout_games": 0,
+        "candidate_timeouts": 0,
+        "opponent_timeouts": 0,
+        "candidate_timeout_rate": 0.0,
+        "opponent_timeout_rate": 0.0,
+        "candidate_timeout_ms": 2000.0,
+        "opponent_timeout_ms": 5000.0,
+        "candidate_avg_move_ms": 364.14749518102957,
+        "candidate_max_move_ms": 749.4318999815732,
+        "opponent_avg_move_ms": 2543.0002009058144,
+        "opponent_max_move_ms": 4875.704400008544,
+        "invalid_actions": {
+          "candidate": 0,
+          "opponent": 0,
+          "total": 0
+        },
+        "timeout_result_policy": "fail_eval",
+        "reliable": true,
+        "unreliable_reasons": [],
+        "reliability": {
+          "reliable": true,
+          "reliable_win_rate": 0.9625,
+          "warning": null,
+          "candidate_timeout_rate": 0.0,
+          "opponent_timeout_rate": 0.0,
+          "max_candidate_timeout_rate": 0.01,
+          "max_opponent_timeout_rate": 0.05
+        },
+        "illegal_actions": {
+          "agent_a": 0,
+          "agent_b": 0,
+          "total": 0
+        },
+        "timeouts": {
+          "agent_a": 0,
+          "agent_b": 0,
+          "total": 0
+        },
+        "errors": {
+          "agent_a": 0,
+          "agent_b": 0,
+          "total": 0
+        },
+        "avg_steps": 19.7875,
+        "avg_step_time_sec": {
+          "agent_a": 0.36414749518102957,
+          "agent_b": 2.5430002009058144
+        },
+        "p95_step_time_sec": {
+          "agent_a": 0.49126051001949234,
+          "agent_b": 4.809779219981283
+        },
+        "step_time_sum_sec": {
+          "agent_a": 294.95947109663393,
+          "agent_b": 1965.7391553001944
+        },
+        "step_count": {
+          "agent_a": 810,
+          "agent_b": 773
+        },
+        "opponent": "negamax"
+      },
+      "previous_best": {
+        "evaluator_backend": "local_turn_engine_v2",
+        "eval_profile": "strong_local",
+        "agent_a": "checkpoint_puct",
+        "agent_b": "checkpoint_puct",
+        "games": 100,
+        "num_games": 100,
+        "swap_sides": true,
+        "wins": 100,
+        "losses": 0,
+        "draws": 0,
+        "win_rate": 1.0,
+        "reliable_win_rate": 1.0,
+        "reliable_games": 100,
+        "reliable_wins": 100,
+        "reliable_losses": 0,
+        "reliable_draws": 0,
+        "first_player_games": 50,
+        "first_player_wins": 50,
+        "first_player_losses": 0,
+        "first_player_draws": 0,
+        "first_player_win_rate": 1.0,
+        "second_player_games": 50,
+        "second_player_wins": 50,
+        "second_player_losses": 0,
+        "second_player_draws": 0,
+        "second_player_win_rate": 1.0,
+        "side_bias": 0.0,
+        "candidate_timeout_moves": 0,
+        "opponent_timeout_moves": 0,
+        "candidate_timeout_games": 0,
+        "opponent_timeout_games": 0,
+        "candidate_timeouts": 0,
+        "opponent_timeouts": 0,
+        "candidate_timeout_rate": 0.0,
+        "opponent_timeout_rate": 0.0,
+        "candidate_timeout_ms": 2000.0,
+        "opponent_timeout_ms": 5000.0,
+        "candidate_avg_move_ms": 353.589472526954,
+        "candidate_max_move_ms": 735.1583000272512,
+        "opponent_avg_move_ms": 323.72989372992134,
+        "opponent_max_move_ms": 743.8632000703365,
+        "invalid_actions": {
+          "candidate": 0,
+          "opponent": 0,
+          "total": 0
+        },
+        "timeout_result_policy": "fail_eval",
+        "reliable": true,
+        "unreliable_reasons": [],
+        "reliability": {
+          "reliable": true,
+          "reliable_win_rate": 1.0,
+          "warning": null,
+          "candidate_timeout_rate": 0.0,
+          "opponent_timeout_rate": 0.0,
+          "max_candidate_timeout_rate": 0.01,
+          "max_opponent_timeout_rate": 0.05
+        },
+        "illegal_actions": {
+          "agent_a": 0,
+          "agent_b": 0,
+          "total": 0
+        },
+        "timeouts": {
+          "agent_a": 0,
+          "agent_b": 0,
+          "total": 0
+        },
+        "errors": {
+          "agent_a": 0,
+          "agent_b": 0,
+          "total": 0
+        },
+        "avg_steps": 37.5,
+        "avg_step_time_sec": {
+          "agent_a": 0.353589472526954,
+          "agent_b": 0.32372989372992134
+        },
+        "p95_step_time_sec": {
+          "agent_a": 0.4896717599825933,
+          "agent_b": 0.4846108400088269
+        },
+        "step_time_sum_sec": {
+          "agent_a": 671.8199978012126,
+          "agent_b": 598.9003034003545
+        },
+        "step_count": {
+          "agent_a": 1900,
+          "agent_b": 1850
+        },
+        "opponent": "previous_best"
+      }
+    },
+    "previous_best_results": {
+      "random": {
+        "evaluator_backend": "local_turn_engine_v2",
+        "eval_profile": "strong_local",
+        "agent_a": "checkpoint_puct",
+        "agent_b": "random",
+        "games": 30,
+        "num_games": 30,
+        "swap_sides": true,
+        "wins": 30,
+        "losses": 0,
+        "draws": 0,
+        "win_rate": 1.0,
+        "reliable_win_rate": 1.0,
+        "reliable_games": 30,
+        "reliable_wins": 30,
+        "reliable_losses": 0,
+        "reliable_draws": 0,
+        "first_player_games": 15,
+        "first_player_wins": 15,
+        "first_player_losses": 0,
+        "first_player_draws": 0,
+        "first_player_win_rate": 1.0,
+        "second_player_games": 15,
+        "second_player_wins": 15,
+        "second_player_losses": 0,
+        "second_player_draws": 0,
+        "second_player_win_rate": 1.0,
+        "side_bias": 0.0,
+        "candidate_timeout_moves": 0,
+        "opponent_timeout_moves": 0,
+        "candidate_timeout_games": 0,
+        "opponent_timeout_games": 0,
+        "candidate_timeouts": 0,
+        "opponent_timeouts": 0,
+        "candidate_timeout_rate": 0.0,
+        "opponent_timeout_rate": 0.0,
+        "candidate_timeout_ms": 2000.0,
+        "opponent_timeout_ms": 5000.0,
+        "candidate_avg_move_ms": 347.3280473085243,
+        "candidate_max_move_ms": 511.32179994601756,
+        "opponent_avg_move_ms": 0.03736710564944109,
+        "opponent_max_move_ms": 0.7459999760612845,
+        "invalid_actions": {
+          "candidate": 0,
+          "opponent": 0,
+          "total": 0
+        },
+        "timeout_result_policy": "fail_eval",
+        "reliable": true,
+        "unreliable_reasons": [],
+        "reliability": {
+          "reliable": true,
+          "reliable_win_rate": 1.0,
+          "warning": null,
+          "candidate_timeout_rate": 0.0,
+          "opponent_timeout_rate": 0.0,
+          "max_candidate_timeout_rate": 0.01,
+          "max_opponent_timeout_rate": 0.05
+        },
+        "illegal_actions": {
+          "agent_a": 0,
+          "agent_b": 0,
+          "total": 0
+        },
+        "timeouts": {
+          "agent_a": 0,
+          "agent_b": 0,
+          "total": 0
+        },
+        "errors": {
+          "agent_a": 0,
+          "agent_b": 0,
+          "total": 0
+        },
+        "avg_steps": 10.633333333333333,
+        "avg_step_time_sec": {
+          "agent_a": 0.3473280473085243,
+          "agent_b": 3.736710564944109e-05
+        },
+        "p95_step_time_sec": {
+          "agent_a": 0.4826758999493904,
+          "agent_b": 4.2364973342046125e-05
+        },
+        "step_time_sum_sec": {
+          "agent_a": 58.00378390052356,
+          "agent_b": 0.0056798000587150455
+        },
+        "step_count": {
+          "agent_a": 167,
+          "agent_b": 152
+        },
+        "opponent": "random"
+      },
+      "negamax": {
+        "evaluator_backend": "local_turn_engine_v2",
+        "eval_profile": "strong_local",
+        "agent_a": "checkpoint_puct",
+        "agent_b": "negamax",
+        "games": 80,
+        "num_games": 80,
+        "swap_sides": true,
+        "wins": 80,
+        "losses": 0,
+        "draws": 0,
+        "win_rate": 1.0,
+        "reliable_win_rate": 1.0,
+        "reliable_games": 80,
+        "reliable_wins": 80,
+        "reliable_losses": 0,
+        "reliable_draws": 0,
+        "first_player_games": 40,
+        "first_player_wins": 40,
+        "first_player_losses": 0,
+        "first_player_draws": 0,
+        "first_player_win_rate": 1.0,
+        "second_player_games": 40,
+        "second_player_wins": 40,
+        "second_player_losses": 0,
+        "second_player_draws": 0,
+        "second_player_win_rate": 1.0,
+        "side_bias": 0.0,
+        "candidate_timeout_moves": 0,
+        "opponent_timeout_moves": 0,
+        "candidate_timeout_games": 0,
+        "opponent_timeout_games": 0,
+        "candidate_timeouts": 0,
+        "opponent_timeouts": 0,
+        "candidate_timeout_rate": 0.0,
+        "opponent_timeout_rate": 0.0,
+        "candidate_timeout_ms": 2000.0,
+        "opponent_timeout_ms": 5000.0,
+        "candidate_avg_move_ms": 350.8311740977666,
+        "candidate_max_move_ms": 779.3488999595866,
+        "opponent_avg_move_ms": 2538.540749747846,
+        "opponent_max_move_ms": 4907.700899988413,
+        "invalid_actions": {
+          "candidate": 0,
+          "opponent": 0,
+          "total": 0
+        },
+        "timeout_result_policy": "fail_eval",
+        "reliable": true,
+        "unreliable_reasons": [],
+        "reliability": {
+          "reliable": true,
+          "reliable_win_rate": 1.0,
+          "warning": null,
+          "candidate_timeout_rate": 0.0,
+          "opponent_timeout_rate": 0.0,
+          "max_candidate_timeout_rate": 0.01,
+          "max_opponent_timeout_rate": 0.05
+        },
+        "illegal_actions": {
+          "agent_a": 0,
+          "agent_b": 0,
+          "total": 0
+        },
+        "timeouts": {
+          "agent_a": 0,
+          "agent_b": 0,
+          "total": 0
+        },
+        "errors": {
+          "agent_a": 0,
+          "agent_b": 0,
+          "total": 0
+        },
+        "avg_steps": 15.425,
+        "avg_step_time_sec": {
+          "agent_a": 0.3508311740977666,
+          "agent_b": 2.538540749747846
+        },
+        "p95_step_time_sec": {
+          "agent_a": 0.495022900076583,
+          "agent_b": 4.828321899985895
+        },
+        "step_time_sum_sec": {
+          "agent_a": 223.47945790027734,
+          "agent_b": 1515.508827599464
+        },
+        "step_count": {
+          "agent_a": 637,
+          "agent_b": 597
+        },
+        "opponent": "negamax"
+      }
+    },
+    "composite": {
+      "score": 0.9775,
+      "weights": {
+        "random": 0.03,
+        "negamax": 0.42,
+        "mcts_lite": 0.3,
+        "previous_best": 0.25
+      },
+      "components": {
+        "random": {
+          "configured_weight": 0.03,
+          "normalized_weight": 0.04285714285714286,
+          "present": true,
+          "reliable": true,
+          "included": true,
+          "win_rate": 1.0,
+          "status": "included"
+        },
+        "negamax": {
+          "configured_weight": 0.42,
+          "normalized_weight": 0.6,
+          "present": true,
+          "reliable": true,
+          "included": true,
+          "win_rate": 0.9625,
+          "status": "included"
+        },
+        "mcts_lite": {
+          "configured_weight": 0.3,
+          "normalized_weight": 0.0,
+          "present": false,
+          "reliable": false,
+          "included": false,
+          "win_rate": null,
+          "status": "missing"
+        },
+        "previous_best": {
+          "configured_weight": 0.25,
+          "normalized_weight": 0.35714285714285715,
+          "present": true,
+          "reliable": true,
+          "included": true,
+          "win_rate": 1.0,
+          "status": "included"
+        }
+      },
+      "included_weight_sum": 0.7,
+      "all_key_metrics_unreliable": false,
+      "key_metrics": [
+        "negamax",
+        "mcts_lite",
+        "previous_best"
+      ]
+    },
+    "gating": {
+      "passed": false,
+      "reasons": [
+        "vs negamax win rate lower than previous best (0.963 < 1.000)",
+        "mcts_lite evaluation skipped/missing (diagnostic-only this run)"
+      ],
+      "warning": null,
+      "reliability_warnings": []
+    },
+    "config": {
+      "games": 200,
+      "games_by_opponent": {
+        "default": 200,
+        "random": 30,
+        "negamax": 80,
+        "mcts_lite": 0,
+        "previous_best": 100
+      },
+      "simulations": 96,
+      "device": "cpu",
+      "seed": 120,
+      "eval_profile": "strong_local",
+      "candidate_timeout_ms": 2000.0,
+      "opponent_timeout_ms": 5000.0,
+      "max_opponent_timeout_rate": 0.05,
+      "max_candidate_timeout_rate": 0.01,
+      "timeout_result_policy": "fail_eval"
+    },
+    "log_paths": {
+      "json": "D:\\205zd\\Desktop\\Kaggle\\logs\\azlite_train\\pipeline_eval_final_latest_eval_strong_local_20260606_093554.json",
+      "markdown": "D:\\205zd\\Desktop\\Kaggle\\logs\\azlite_train\\pipeline_eval_final_latest_eval_strong_local_20260606_093554.md"
+    }
+  },
+  {
+    "created_at": "2026-06-06T02:24:35.283255+00:00",
+    "label": "final_best_eval",
+    "evaluator_backend": "local_turn_engine_v2",
+    "eval_profile": "kaggle_like",
+    "candidate_checkpoint": "D:\\205zd\\Desktop\\Kaggle\\checkpoints\\azlite_train\\best.pt",
+    "checkpoint": "D:\\205zd\\Desktop\\Kaggle\\checkpoints\\azlite_train\\best.pt",
+    "previous_best_checkpoint": "D:\\205zd\\Desktop\\Kaggle\\checkpoints\\azlite_train\\archived_best\\previous_best_snapshot_iter0030.pt",
+    "opponents": [
+      "random",
+      "negamax",
+      "mcts_lite"
+    ],
+    "reliable": true,
+    "unreliable_reasons": [],
+    "previous_best_available": true,
+    "side_bias_warning": true,
+    "unstable_previous_best_eval": true,
+    "candidate_results": {
+      "random": {
+        "evaluator_backend": "local_turn_engine_v2",
+        "eval_profile": "kaggle_like",
+        "agent_a": "checkpoint_puct",
+        "agent_b": "random",
+        "games": 30,
+        "num_games": 30,
+        "swap_sides": true,
+        "wins": 30,
+        "losses": 0,
+        "draws": 0,
+        "win_rate": 1.0,
+        "reliable_win_rate": 1.0,
+        "reliable_games": 30,
+        "reliable_wins": 30,
+        "reliable_losses": 0,
+        "reliable_draws": 0,
+        "first_player_games": 15,
+        "first_player_wins": 15,
+        "first_player_losses": 0,
+        "first_player_draws": 0,
+        "first_player_win_rate": 1.0,
+        "second_player_games": 15,
+        "second_player_wins": 15,
+        "second_player_losses": 0,
+        "second_player_draws": 0,
+        "second_player_win_rate": 1.0,
+        "side_bias": 0.0,
+        "candidate_timeout_moves": 0,
+        "opponent_timeout_moves": 0,
+        "candidate_timeout_games": 0,
+        "opponent_timeout_games": 0,
+        "candidate_timeouts": 0,
+        "opponent_timeouts": 0,
+        "candidate_timeout_rate": 0.0,
+        "opponent_timeout_rate": 0.0,
+        "candidate_timeout_ms": 2000.0,
+        "opponent_timeout_ms": 2000.0,
+        "candidate_avg_move_ms": 345.88897388033973,
+        "candidate_max_move_ms": 531.340999994427,
+        "opponent_avg_move_ms": 0.030542253254270048,
+        "opponent_max_move_ms": 0.1697000116109848,
+        "invalid_actions": {
+          "candidate": 0,
+          "opponent": 0,
+          "total": 0
+        },
+        "timeout_result_policy": "fail_eval",
+        "reliable": true,
+        "unreliable_reasons": [],
+        "reliability": {
+          "reliable": true,
+          "reliable_win_rate": 1.0,
+          "warning": null,
+          "candidate_timeout_rate": 0.0,
+          "opponent_timeout_rate": 0.0,
+          "max_candidate_timeout_rate": 0.01,
+          "max_opponent_timeout_rate": 0.05
+        },
+        "illegal_actions": {
+          "agent_a": 0,
+          "agent_b": 0,
+          "total": 0
+        },
+        "timeouts": {
+          "agent_a": 0,
+          "agent_b": 0,
+          "total": 0
+        },
+        "errors": {
+          "agent_a": 0,
+          "agent_b": 0,
+          "total": 0
+        },
+        "avg_steps": 9.966666666666667,
+        "avg_step_time_sec": {
+          "agent_a": 0.34588897388033973,
+          "agent_b": 3.054225325427005e-05
+        },
+        "p95_step_time_sec": {
+          "agent_a": 0.4869661599863321,
+          "agent_b": 3.624504315666853e-05
+        },
+        "step_time_sum_sec": {
+          "agent_a": 54.304568899213336,
+          "agent_b": 0.004336999962106347
+        },
+        "step_count": {
+          "agent_a": 157,
+          "agent_b": 142
+        },
+        "opponent": "random"
+      },
+      "negamax": {
+        "evaluator_backend": "local_turn_engine_v2",
+        "eval_profile": "kaggle_like",
+        "agent_a": "checkpoint_puct",
+        "agent_b": "negamax",
+        "games": 80,
+        "num_games": 80,
+        "swap_sides": true,
+        "wins": 79,
+        "losses": 0,
+        "draws": 1,
+        "win_rate": 0.9875,
+        "reliable_win_rate": 0.9875,
+        "reliable_games": 80,
+        "reliable_wins": 79,
+        "reliable_losses": 0,
+        "reliable_draws": 1,
+        "first_player_games": 40,
+        "first_player_wins": 39,
+        "first_player_losses": 0,
+        "first_player_draws": 1,
+        "first_player_win_rate": 0.975,
+        "second_player_games": 40,
+        "second_player_wins": 40,
+        "second_player_losses": 0,
+        "second_player_draws": 0,
+        "second_player_win_rate": 1.0,
+        "side_bias": 0.025000000000000022,
+        "candidate_timeout_moves": 0,
+        "opponent_timeout_moves": 0,
+        "candidate_timeout_games": 0,
+        "opponent_timeout_games": 0,
+        "candidate_timeouts": 0,
+        "opponent_timeouts": 0,
+        "candidate_timeout_rate": 0.0,
+        "opponent_timeout_rate": 0.0,
+        "candidate_timeout_ms": 2000.0,
+        "opponent_timeout_ms": 2000.0,
+        "candidate_avg_move_ms": 342.00045901912125,
+        "candidate_max_move_ms": 710.3777000447735,
+        "opponent_avg_move_ms": 950.6967006762422,
+        "opponent_max_move_ms": 1970.767499995418,
+        "invalid_actions": {
+          "candidate": 0,
+          "opponent": 0,
+          "total": 0
+        },
+        "timeout_result_policy": "fail_eval",
+        "reliable": true,
+        "unreliable_reasons": [],
+        "reliability": {
+          "reliable": true,
+          "reliable_win_rate": 0.9875,
+          "warning": null,
+          "candidate_timeout_rate": 0.0,
+          "opponent_timeout_rate": 0.0,
+          "max_candidate_timeout_rate": 0.01,
+          "max_opponent_timeout_rate": 0.05
+        },
+        "illegal_actions": {
+          "agent_a": 0,
+          "agent_b": 0,
+          "total": 0
+        },
+        "timeouts": {
+          "agent_a": 0,
+          "agent_b": 0,
+          "total": 0
+        },
+        "errors": {
+          "agent_a": 0,
+          "agent_b": 0,
+          "total": 0
+        },
+        "avg_steps": 15.3125,
+        "avg_step_time_sec": {
+          "agent_a": 0.34200045901912124,
+          "agent_b": 0.9506967006762422
+        },
+        "p95_step_time_sec": {
+          "agent_a": 0.4886720950249582,
+          "agent_b": 1.9085483399685472
+        },
+        "step_time_sum_sec": {
+          "agent_a": 216.14429010008462,
+          "agent_b": 563.7631435010117
+        },
+        "step_count": {
+          "agent_a": 632,
+          "agent_b": 593
+        },
+        "opponent": "negamax"
+      },
+      "previous_best": {
+        "evaluator_backend": "local_turn_engine_v2",
+        "eval_profile": "kaggle_like",
+        "agent_a": "checkpoint_puct",
+        "agent_b": "checkpoint_puct",
+        "games": 100,
+        "num_games": 100,
+        "swap_sides": true,
+        "wins": 50,
+        "losses": 50,
+        "draws": 0,
+        "win_rate": 0.5,
+        "reliable_win_rate": 0.5,
+        "reliable_games": 100,
+        "reliable_wins": 50,
+        "reliable_losses": 50,
+        "reliable_draws": 0,
+        "first_player_games": 50,
+        "first_player_wins": 0,
+        "first_player_losses": 50,
+        "first_player_draws": 0,
+        "first_player_win_rate": 0.0,
+        "second_player_games": 50,
+        "second_player_wins": 50,
+        "second_player_losses": 0,
+        "second_player_draws": 0,
+        "second_player_win_rate": 1.0,
+        "side_bias": 1.0,
+        "candidate_timeout_moves": 0,
+        "opponent_timeout_moves": 0,
+        "candidate_timeout_games": 0,
+        "opponent_timeout_games": 0,
+        "candidate_timeouts": 0,
+        "opponent_timeouts": 0,
+        "candidate_timeout_rate": 0.0,
+        "opponent_timeout_rate": 0.0,
+        "candidate_timeout_ms": 2000.0,
+        "opponent_timeout_ms": 2000.0,
+        "candidate_avg_move_ms": 318.7791907889646,
+        "candidate_max_move_ms": 770.1935999793932,
+        "opponent_avg_move_ms": 319.48170094738566,
+        "opponent_max_move_ms": 715.535799972713,
+        "invalid_actions": {
+          "candidate": 0,
+          "opponent": 0,
+          "total": 0
+        },
+        "timeout_result_policy": "fail_eval",
+        "reliable": true,
+        "unreliable_reasons": [],
+        "reliability": {
+          "reliable": true,
+          "reliable_win_rate": 0.5,
+          "warning": null,
+          "candidate_timeout_rate": 0.0,
+          "opponent_timeout_rate": 0.0,
+          "max_candidate_timeout_rate": 0.01,
+          "max_opponent_timeout_rate": 0.05
+        },
+        "illegal_actions": {
+          "agent_a": 0,
+          "agent_b": 0,
+          "total": 0
+        },
+        "timeouts": {
+          "agent_a": 0,
+          "agent_b": 0,
+          "total": 0
+        },
+        "errors": {
+          "agent_a": 0,
+          "agent_b": 0,
+          "total": 0
+        },
+        "avg_steps": 38.0,
+        "avg_step_time_sec": {
+          "agent_a": 0.3187791907889646,
+          "agent_b": 0.31948170094738565
+        },
+        "p95_step_time_sec": {
+          "agent_a": 0.47971218500169927,
+          "agent_b": 0.48372656501014716
+        },
+        "step_time_sum_sec": {
+          "agent_a": 605.6804624990327,
+          "agent_b": 607.0152318000328
+        },
+        "step_count": {
+          "agent_a": 1900,
+          "agent_b": 1900
+        },
+        "opponent": "previous_best"
+      }
+    },
+    "previous_best_results": {
+      "random": {
+        "evaluator_backend": "local_turn_engine_v2",
+        "eval_profile": "kaggle_like",
+        "agent_a": "checkpoint_puct",
+        "agent_b": "random",
+        "games": 30,
+        "num_games": 30,
+        "swap_sides": true,
+        "wins": 30,
+        "losses": 0,
+        "draws": 0,
+        "win_rate": 1.0,
+        "reliable_win_rate": 1.0,
+        "reliable_games": 30,
+        "reliable_wins": 30,
+        "reliable_losses": 0,
+        "reliable_draws": 0,
+        "first_player_games": 15,
+        "first_player_wins": 15,
+        "first_player_losses": 0,
+        "first_player_draws": 0,
+        "first_player_win_rate": 1.0,
+        "second_player_games": 15,
+        "second_player_wins": 15,
+        "second_player_losses": 0,
+        "second_player_draws": 0,
+        "second_player_win_rate": 1.0,
+        "side_bias": 0.0,
+        "candidate_timeout_moves": 0,
+        "opponent_timeout_moves": 0,
+        "candidate_timeout_games": 0,
+        "opponent_timeout_games": 0,
+        "candidate_timeouts": 0,
+        "opponent_timeouts": 0,
+        "candidate_timeout_rate": 0.0,
+        "opponent_timeout_rate": 0.0,
+        "candidate_timeout_ms": 2000.0,
+        "opponent_timeout_ms": 2000.0,
+        "candidate_avg_move_ms": 360.0613708030838,
+        "candidate_max_move_ms": 526.6878999536857,
+        "opponent_avg_move_ms": 0.032891095169398886,
+        "opponent_max_move_ms": 0.4437998868525028,
+        "invalid_actions": {
+          "candidate": 0,
+          "opponent": 0,
+          "total": 0
+        },
+        "timeout_result_policy": "fail_eval",
+        "reliable": true,
+        "unreliable_reasons": [],
+        "reliability": {
+          "reliable": true,
+          "reliable_win_rate": 1.0,
+          "warning": null,
+          "candidate_timeout_rate": 0.0,
+          "opponent_timeout_rate": 0.0,
+          "max_candidate_timeout_rate": 0.01,
+          "max_opponent_timeout_rate": 0.05
+        },
+        "illegal_actions": {
+          "agent_a": 0,
+          "agent_b": 0,
+          "total": 0
+        },
+        "timeouts": {
+          "agent_a": 0,
+          "agent_b": 0,
+          "total": 0
+        },
+        "errors": {
+          "agent_a": 0,
+          "agent_b": 0,
+          "total": 0
+        },
+        "avg_steps": 10.233333333333333,
+        "avg_step_time_sec": {
+          "agent_a": 0.36006137080308376,
+          "agent_b": 3.2891095169398885e-05
+        },
+        "p95_step_time_sec": {
+          "agent_a": 0.489962000050582,
+          "agent_b": 3.86999745387584e-05
+        },
+        "step_time_sum_sec": {
+          "agent_a": 57.96988069929648,
+          "agent_b": 0.004802099894732237
+        },
+        "step_count": {
+          "agent_a": 161,
+          "agent_b": 146
+        },
+        "opponent": "random"
+      },
+      "negamax": {
+        "evaluator_backend": "local_turn_engine_v2",
+        "eval_profile": "kaggle_like",
+        "agent_a": "checkpoint_puct",
+        "agent_b": "negamax",
+        "games": 80,
+        "num_games": 80,
+        "swap_sides": true,
+        "wins": 78,
+        "losses": 1,
+        "draws": 1,
+        "win_rate": 0.975,
+        "reliable_win_rate": 0.975,
+        "reliable_games": 80,
+        "reliable_wins": 78,
+        "reliable_losses": 1,
+        "reliable_draws": 1,
+        "first_player_games": 40,
+        "first_player_wins": 40,
+        "first_player_losses": 0,
+        "first_player_draws": 0,
+        "first_player_win_rate": 1.0,
+        "second_player_games": 40,
+        "second_player_wins": 38,
+        "second_player_losses": 1,
+        "second_player_draws": 1,
+        "second_player_win_rate": 0.95,
+        "side_bias": 0.050000000000000044,
+        "candidate_timeout_moves": 0,
+        "opponent_timeout_moves": 0,
+        "candidate_timeout_games": 0,
+        "opponent_timeout_games": 0,
+        "candidate_timeouts": 0,
+        "opponent_timeouts": 0,
+        "candidate_timeout_rate": 0.0,
+        "opponent_timeout_rate": 0.0,
+        "candidate_timeout_ms": 2000.0,
+        "opponent_timeout_ms": 2000.0,
+        "candidate_avg_move_ms": 338.58077657799265,
+        "candidate_max_move_ms": 736.3877000752836,
+        "opponent_avg_move_ms": 985.9331001680098,
+        "opponent_max_move_ms": 1973.0637000175193,
+        "invalid_actions": {
+          "candidate": 0,
+          "opponent": 0,
+          "total": 0
+        },
+        "timeout_result_policy": "fail_eval",
+        "reliable": true,
+        "unreliable_reasons": [],
+        "reliability": {
+          "reliable": true,
+          "reliable_win_rate": 0.975,
+          "warning": null,
+          "candidate_timeout_rate": 0.0,
+          "opponent_timeout_rate": 0.0,
+          "max_candidate_timeout_rate": 0.01,
+          "max_opponent_timeout_rate": 0.05
+        },
+        "illegal_actions": {
+          "agent_a": 0,
+          "agent_b": 0,
+          "total": 0
+        },
+        "timeouts": {
+          "agent_a": 0,
+          "agent_b": 0,
+          "total": 0
+        },
+        "errors": {
+          "agent_a": 0,
+          "agent_b": 0,
+          "total": 0
+        },
+        "avg_steps": 15.4125,
+        "avg_step_time_sec": {
+          "agent_a": 0.3385807765779926,
+          "agent_b": 0.9859331001680098
+        },
+        "p95_step_time_sec": {
+          "agent_a": 0.48858624999411404,
+          "agent_b": 1.9183286999817937
+        },
+        "step_time_sum_sec": {
+          "agent_a": 215.3373739036033,
+          "agent_b": 588.6020608003018
+        },
+        "step_count": {
+          "agent_a": 636,
+          "agent_b": 597
+        },
+        "opponent": "negamax"
+      }
+    },
+    "composite": {
+      "score": 0.8139285714285714,
+      "weights": {
+        "random": 0.03,
+        "negamax": 0.42,
+        "mcts_lite": 0.3,
+        "previous_best": 0.25
+      },
+      "components": {
+        "random": {
+          "configured_weight": 0.03,
+          "normalized_weight": 0.04285714285714286,
+          "present": true,
+          "reliable": true,
+          "included": true,
+          "win_rate": 1.0,
+          "status": "included"
+        },
+        "negamax": {
+          "configured_weight": 0.42,
+          "normalized_weight": 0.6,
+          "present": true,
+          "reliable": true,
+          "included": true,
+          "win_rate": 0.9875,
+          "status": "included"
+        },
+        "mcts_lite": {
+          "configured_weight": 0.3,
+          "normalized_weight": 0.0,
+          "present": false,
+          "reliable": false,
+          "included": false,
+          "win_rate": null,
+          "status": "missing"
+        },
+        "previous_best": {
+          "configured_weight": 0.25,
+          "normalized_weight": 0.35714285714285715,
+          "present": true,
+          "reliable": true,
+          "included": true,
+          "win_rate": 0.5,
+          "status": "included"
+        }
+      },
+      "included_weight_sum": 0.7,
+      "all_key_metrics_unreliable": false,
+      "key_metrics": [
+        "negamax",
+        "mcts_lite",
+        "previous_best"
+      ]
+    },
+    "gating": {
+      "passed": false,
+      "reasons": [
+        "mcts_lite evaluation skipped/missing (diagnostic-only this run)",
+        "vs previous_best win rate below 55% (0.500 < 0.550)",
+        "vs previous_best appears 50/50 by total WR but has strong first/second-player bias; ignored due extreme side bias",
+        "previous_best matchup unstable due severe first/second-player side bias; require more games."
+      ],
+      "warning": null,
+      "reliability_warnings": []
+    },
+    "config": {
+      "games": 200,
+      "games_by_opponent": {
+        "default": 200,
+        "random": 30,
+        "negamax": 80,
+        "mcts_lite": 0,
+        "previous_best": 100
+      },
+      "simulations": 96,
+      "device": "cpu",
+      "seed": 219,
+      "eval_profile": "kaggle_like",
+      "candidate_timeout_ms": 2000.0,
+      "opponent_timeout_ms": 2000.0,
+      "max_opponent_timeout_rate": 0.05,
+      "max_candidate_timeout_rate": 0.01,
+      "timeout_result_policy": "fail_eval"
+    },
+    "log_paths": {
+      "json": "D:\\205zd\\Desktop\\Kaggle\\logs\\azlite_train\\pipeline_eval_final_best_eval_20260606_102435.json",
+      "markdown": "D:\\205zd\\Desktop\\Kaggle\\logs\\azlite_train\\pipeline_eval_final_best_eval_20260606_102435.md"
+    }
+  },
+  {
+    "created_at": "2026-06-06T03:31:10.152180+00:00",
+    "label": "final_best_eval_strong_local",
+    "evaluator_backend": "local_turn_engine_v2",
+    "eval_profile": "strong_local",
+    "candidate_checkpoint": "D:\\205zd\\Desktop\\Kaggle\\checkpoints\\azlite_train\\best.pt",
+    "checkpoint": "D:\\205zd\\Desktop\\Kaggle\\checkpoints\\azlite_train\\best.pt",
+    "previous_best_checkpoint": "D:\\205zd\\Desktop\\Kaggle\\checkpoints\\azlite_train\\archived_best\\previous_best_snapshot_iter0030.pt",
+    "opponents": [
+      "random",
+      "negamax",
+      "mcts_lite"
+    ],
+    "reliable": true,
+    "unreliable_reasons": [],
+    "previous_best_available": true,
+    "side_bias_warning": true,
+    "unstable_previous_best_eval": true,
+    "candidate_results": {
+      "random": {
+        "evaluator_backend": "local_turn_engine_v2",
+        "eval_profile": "strong_local",
+        "agent_a": "checkpoint_puct",
+        "agent_b": "random",
+        "games": 30,
+        "num_games": 30,
+        "swap_sides": true,
+        "wins": 30,
+        "losses": 0,
+        "draws": 0,
+        "win_rate": 1.0,
+        "reliable_win_rate": 1.0,
+        "reliable_games": 30,
+        "reliable_wins": 30,
+        "reliable_losses": 0,
+        "reliable_draws": 0,
+        "first_player_games": 15,
+        "first_player_wins": 15,
+        "first_player_losses": 0,
+        "first_player_draws": 0,
+        "first_player_win_rate": 1.0,
+        "second_player_games": 15,
+        "second_player_wins": 15,
+        "second_player_losses": 0,
+        "second_player_draws": 0,
+        "second_player_win_rate": 1.0,
+        "side_bias": 0.0,
+        "candidate_timeout_moves": 0,
+        "opponent_timeout_moves": 0,
+        "candidate_timeout_games": 0,
+        "opponent_timeout_games": 0,
+        "candidate_timeouts": 0,
+        "opponent_timeouts": 0,
+        "candidate_timeout_rate": 0.0,
+        "opponent_timeout_rate": 0.0,
+        "candidate_timeout_ms": 2000.0,
+        "opponent_timeout_ms": 5000.0,
+        "candidate_avg_move_ms": 361.5407945540973,
+        "candidate_max_move_ms": 543.1775000179186,
+        "opponent_avg_move_ms": 0.0304379705887507,
+        "opponent_max_move_ms": 0.0942000187933445,
+        "invalid_actions": {
+          "candidate": 0,
+          "opponent": 0,
+          "total": 0
+        },
+        "timeout_result_policy": "fail_eval",
+        "reliable": true,
+        "unreliable_reasons": [],
+        "reliability": {
+          "reliable": true,
+          "reliable_win_rate": 1.0,
+          "warning": null,
+          "candidate_timeout_rate": 0.0,
+          "opponent_timeout_rate": 0.0,
+          "max_candidate_timeout_rate": 0.01,
+          "max_opponent_timeout_rate": 0.05
+        },
+        "illegal_actions": {
+          "agent_a": 0,
+          "agent_b": 0,
+          "total": 0
+        },
+        "timeouts": {
+          "agent_a": 0,
+          "agent_b": 0,
+          "total": 0
+        },
+        "errors": {
+          "agent_a": 0,
+          "agent_b": 0,
+          "total": 0
+        },
+        "avg_steps": 12.966666666666667,
+        "avg_step_time_sec": {
+          "agent_a": 0.3615407945540973,
+          "agent_b": 3.0437970588750698e-05
+        },
+        "p95_step_time_sec": {
+          "agent_a": 0.48566181504866107,
+          "agent_b": 3.776997327804565e-05
+        },
+        "step_time_sum_sec": {
+          "agent_a": 73.03124049992766,
+          "agent_b": 0.005691900500096381
+        },
+        "step_count": {
+          "agent_a": 202,
+          "agent_b": 187
+        },
+        "opponent": "random"
+      },
+      "negamax": {
+        "evaluator_backend": "local_turn_engine_v2",
+        "eval_profile": "strong_local",
+        "agent_a": "checkpoint_puct",
+        "agent_b": "negamax",
+        "games": 80,
+        "num_games": 80,
+        "swap_sides": true,
+        "wins": 78,
+        "losses": 0,
+        "draws": 2,
+        "win_rate": 0.975,
+        "reliable_win_rate": 0.975,
+        "reliable_games": 80,
+        "reliable_wins": 78,
+        "reliable_losses": 0,
+        "reliable_draws": 2,
+        "first_player_games": 40,
+        "first_player_wins": 40,
+        "first_player_losses": 0,
+        "first_player_draws": 0,
+        "first_player_win_rate": 1.0,
+        "second_player_games": 40,
+        "second_player_wins": 38,
+        "second_player_losses": 0,
+        "second_player_draws": 2,
+        "second_player_win_rate": 0.95,
+        "side_bias": 0.050000000000000044,
+        "candidate_timeout_moves": 0,
+        "opponent_timeout_moves": 0,
+        "candidate_timeout_games": 0,
+        "opponent_timeout_games": 0,
+        "candidate_timeouts": 0,
+        "opponent_timeouts": 0,
+        "candidate_timeout_rate": 0.0,
+        "opponent_timeout_rate": 0.0,
+        "candidate_timeout_ms": 2000.0,
+        "opponent_timeout_ms": 5000.0,
+        "candidate_avg_move_ms": 323.03111550499113,
+        "candidate_max_move_ms": 772.7784999879077,
+        "opponent_avg_move_ms": 2328.70521993322,
+        "opponent_max_move_ms": 4855.7020999724045,
+        "invalid_actions": {
+          "candidate": 0,
+          "opponent": 0,
+          "total": 0
+        },
+        "timeout_result_policy": "fail_eval",
+        "reliable": true,
+        "unreliable_reasons": [],
+        "reliability": {
+          "reliable": true,
+          "reliable_win_rate": 0.975,
+          "warning": null,
+          "candidate_timeout_rate": 0.0,
+          "opponent_timeout_rate": 0.0,
+          "max_candidate_timeout_rate": 0.01,
+          "max_opponent_timeout_rate": 0.05
+        },
+        "illegal_actions": {
+          "agent_a": 0,
+          "agent_b": 0,
+          "total": 0
+        },
+        "timeouts": {
+          "agent_a": 0,
+          "agent_b": 0,
+          "total": 0
+        },
+        "errors": {
+          "agent_a": 0,
+          "agent_b": 0,
+          "total": 0
+        },
+        "avg_steps": 15.3,
+        "avg_step_time_sec": {
+          "agent_a": 0.32303111550499114,
+          "agent_b": 2.3287052199332203
+        },
+        "p95_step_time_sec": {
+          "agent_a": 0.48390127502498215,
+          "agent_b": 4.795183449989418
+        },
+        "step_time_sum_sec": {
+          "agent_a": 204.1556649991544,
+          "agent_b": 1378.5934902004665
+        },
+        "step_count": {
+          "agent_a": 632,
+          "agent_b": 592
+        },
+        "opponent": "negamax"
+      },
+      "previous_best": {
+        "evaluator_backend": "local_turn_engine_v2",
+        "eval_profile": "strong_local",
+        "agent_a": "checkpoint_puct",
+        "agent_b": "checkpoint_puct",
+        "games": 100,
+        "num_games": 100,
+        "swap_sides": true,
+        "wins": 50,
+        "losses": 50,
+        "draws": 0,
+        "win_rate": 0.5,
+        "reliable_win_rate": 0.5,
+        "reliable_games": 100,
+        "reliable_wins": 50,
+        "reliable_losses": 50,
+        "reliable_draws": 0,
+        "first_player_games": 50,
+        "first_player_wins": 0,
+        "first_player_losses": 50,
+        "first_player_draws": 0,
+        "first_player_win_rate": 0.0,
+        "second_player_games": 50,
+        "second_player_wins": 50,
+        "second_player_losses": 0,
+        "second_player_draws": 0,
+        "second_player_win_rate": 1.0,
+        "side_bias": 1.0,
+        "candidate_timeout_moves": 0,
+        "opponent_timeout_moves": 0,
+        "candidate_timeout_games": 0,
+        "opponent_timeout_games": 0,
+        "candidate_timeouts": 0,
+        "opponent_timeouts": 0,
+        "candidate_timeout_rate": 0.0,
+        "opponent_timeout_rate": 0.0,
+        "candidate_timeout_ms": 2000.0,
+        "opponent_timeout_ms": 5000.0,
+        "candidate_avg_move_ms": 212.33932489418964,
+        "candidate_max_move_ms": 709.1887999558821,
+        "opponent_avg_move_ms": 212.3372017870976,
+        "opponent_max_move_ms": 634.181100060232,
+        "invalid_actions": {
+          "candidate": 0,
+          "opponent": 0,
+          "total": 0
+        },
+        "timeout_result_policy": "fail_eval",
+        "reliable": true,
+        "unreliable_reasons": [],
+        "reliability": {
+          "reliable": true,
+          "reliable_win_rate": 0.5,
+          "warning": null,
+          "candidate_timeout_rate": 0.0,
+          "opponent_timeout_rate": 0.0,
+          "max_candidate_timeout_rate": 0.01,
+          "max_opponent_timeout_rate": 0.05
+        },
+        "illegal_actions": {
+          "agent_a": 0,
+          "agent_b": 0,
+          "total": 0
+        },
+        "timeouts": {
+          "agent_a": 0,
+          "agent_b": 0,
+          "total": 0
+        },
+        "errors": {
+          "agent_a": 0,
+          "agent_b": 0,
+          "total": 0
+        },
+        "avg_steps": 38.0,
+        "avg_step_time_sec": {
+          "agent_a": 0.21233932489418963,
+          "agent_b": 0.21233720178709758
+        },
+        "p95_step_time_sec": {
+          "agent_a": 0.36893149005481973,
+          "agent_b": 0.36670680502429603
+        },
+        "step_time_sum_sec": {
+          "agent_a": 403.4447172989603,
+          "agent_b": 403.4406833954854
+        },
+        "step_count": {
+          "agent_a": 1900,
+          "agent_b": 1900
+        },
+        "opponent": "previous_best"
+      }
+    },
+    "previous_best_results": {
+      "random": {
+        "evaluator_backend": "local_turn_engine_v2",
+        "eval_profile": "strong_local",
+        "agent_a": "checkpoint_puct",
+        "agent_b": "random",
+        "games": 30,
+        "num_games": 30,
+        "swap_sides": true,
+        "wins": 30,
+        "losses": 0,
+        "draws": 0,
+        "win_rate": 1.0,
+        "reliable_win_rate": 1.0,
+        "reliable_games": 30,
+        "reliable_wins": 30,
+        "reliable_losses": 0,
+        "reliable_draws": 0,
+        "first_player_games": 15,
+        "first_player_wins": 15,
+        "first_player_losses": 0,
+        "first_player_draws": 0,
+        "first_player_win_rate": 1.0,
+        "second_player_games": 15,
+        "second_player_wins": 15,
+        "second_player_losses": 0,
+        "second_player_draws": 0,
+        "second_player_win_rate": 1.0,
+        "side_bias": 0.0,
+        "candidate_timeout_moves": 0,
+        "opponent_timeout_moves": 0,
+        "candidate_timeout_games": 0,
+        "opponent_timeout_games": 0,
+        "candidate_timeouts": 0,
+        "opponent_timeouts": 0,
+        "candidate_timeout_rate": 0.0,
+        "opponent_timeout_rate": 0.0,
+        "candidate_timeout_ms": 2000.0,
+        "opponent_timeout_ms": 5000.0,
+        "candidate_avg_move_ms": 227.41279252456363,
+        "candidate_max_move_ms": 454.37580009456724,
+        "opponent_avg_move_ms": 0.023005300935244923,
+        "opponent_max_move_ms": 0.044899992644786835,
+        "invalid_actions": {
+          "candidate": 0,
+          "opponent": 0,
+          "total": 0
+        },
+        "timeout_result_policy": "fail_eval",
+        "reliable": true,
+        "unreliable_reasons": [],
+        "reliability": {
+          "reliable": true,
+          "reliable_win_rate": 1.0,
+          "warning": null,
+          "candidate_timeout_rate": 0.0,
+          "opponent_timeout_rate": 0.0,
+          "max_candidate_timeout_rate": 0.01,
+          "max_opponent_timeout_rate": 0.05
+        },
+        "illegal_actions": {
+          "agent_a": 0,
+          "agent_b": 0,
+          "total": 0
+        },
+        "timeouts": {
+          "agent_a": 0,
+          "agent_b": 0,
+          "total": 0
+        },
+        "errors": {
+          "agent_a": 0,
+          "agent_b": 0,
+          "total": 0
+        },
+        "avg_steps": 9.3,
+        "avg_step_time_sec": {
+          "agent_a": 0.22741279252456362,
+          "agent_b": 2.300530093524492e-05
+        },
+        "p95_step_time_sec": {
+          "agent_a": 0.34950580997392533,
+          "agent_b": 3.090000245720148e-05
+        },
+        "step_time_sum_sec": {
+          "agent_a": 33.42968050111085,
+          "agent_b": 0.0030366997234523296
+        },
+        "step_count": {
+          "agent_a": 147,
+          "agent_b": 132
+        },
+        "opponent": "random"
+      },
+      "negamax": {
+        "evaluator_backend": "local_turn_engine_v2",
+        "eval_profile": "strong_local",
+        "agent_a": "checkpoint_puct",
+        "agent_b": "negamax",
+        "games": 80,
+        "num_games": 80,
+        "swap_sides": true,
+        "wins": 78,
+        "losses": 2,
+        "draws": 0,
+        "win_rate": 0.975,
+        "reliable_win_rate": 0.975,
+        "reliable_games": 80,
+        "reliable_wins": 78,
+        "reliable_losses": 2,
+        "reliable_draws": 0,
+        "first_player_games": 40,
+        "first_player_wins": 40,
+        "first_player_losses": 0,
+        "first_player_draws": 0,
+        "first_player_win_rate": 1.0,
+        "second_player_games": 40,
+        "second_player_wins": 38,
+        "second_player_losses": 2,
+        "second_player_draws": 0,
+        "second_player_win_rate": 0.95,
+        "side_bias": 0.050000000000000044,
+        "candidate_timeout_moves": 0,
+        "opponent_timeout_moves": 0,
+        "candidate_timeout_games": 0,
+        "opponent_timeout_games": 0,
+        "candidate_timeouts": 0,
+        "opponent_timeouts": 0,
+        "candidate_timeout_rate": 0.0,
+        "opponent_timeout_rate": 0.0,
+        "candidate_timeout_ms": 2000.0,
+        "opponent_timeout_ms": 5000.0,
+        "candidate_avg_move_ms": 231.1564834452555,
+        "candidate_max_move_ms": 512.7083000261337,
+        "opponent_avg_move_ms": 2358.733491258129,
+        "opponent_max_move_ms": 4858.438099967316,
+        "invalid_actions": {
+          "candidate": 0,
+          "opponent": 0,
+          "total": 0
+        },
+        "timeout_result_policy": "fail_eval",
+        "reliable": true,
+        "unreliable_reasons": [],
+        "reliability": {
+          "reliable": true,
+          "reliable_win_rate": 0.975,
+          "warning": null,
+          "candidate_timeout_rate": 0.0,
+          "opponent_timeout_rate": 0.0,
+          "max_candidate_timeout_rate": 0.01,
+          "max_opponent_timeout_rate": 0.05
+        },
+        "illegal_actions": {
+          "agent_a": 0,
+          "agent_b": 0,
+          "total": 0
+        },
+        "timeouts": {
+          "agent_a": 0,
+          "agent_b": 0,
+          "total": 0
+        },
+        "errors": {
+          "agent_a": 0,
+          "agent_b": 0,
+          "total": 0
+        },
+        "avg_steps": 14.775,
+        "avg_step_time_sec": {
+          "agent_a": 0.2311564834452555,
+          "agent_b": 2.3587334912581293
+        },
+        "p95_step_time_sec": {
+          "agent_a": 0.3824247249867767,
+          "agent_b": 4.78441950493143
+        },
+        "step_time_sum_sec": {
+          "agent_a": 141.00545490160584,
+          "agent_b": 1349.1955569996499
+        },
+        "step_count": {
+          "agent_a": 610,
+          "agent_b": 572
+        },
+        "opponent": "negamax"
+      }
+    },
+    "composite": {
+      "score": 0.8064285714285714,
+      "weights": {
+        "random": 0.03,
+        "negamax": 0.42,
+        "mcts_lite": 0.3,
+        "previous_best": 0.25
+      },
+      "components": {
+        "random": {
+          "configured_weight": 0.03,
+          "normalized_weight": 0.04285714285714286,
+          "present": true,
+          "reliable": true,
+          "included": true,
+          "win_rate": 1.0,
+          "status": "included"
+        },
+        "negamax": {
+          "configured_weight": 0.42,
+          "normalized_weight": 0.6,
+          "present": true,
+          "reliable": true,
+          "included": true,
+          "win_rate": 0.975,
+          "status": "included"
+        },
+        "mcts_lite": {
+          "configured_weight": 0.3,
+          "normalized_weight": 0.0,
+          "present": false,
+          "reliable": false,
+          "included": false,
+          "win_rate": null,
+          "status": "missing"
+        },
+        "previous_best": {
+          "configured_weight": 0.25,
+          "normalized_weight": 0.35714285714285715,
+          "present": true,
+          "reliable": true,
+          "included": true,
+          "win_rate": 0.5,
+          "status": "included"
+        }
+      },
+      "included_weight_sum": 0.7,
+      "all_key_metrics_unreliable": false,
+      "key_metrics": [
+        "negamax",
+        "mcts_lite",
+        "previous_best"
+      ]
+    },
+    "gating": {
+      "passed": false,
+      "reasons": [
+        "mcts_lite evaluation skipped/missing (diagnostic-only this run)",
+        "vs previous_best win rate below 55% (0.500 < 0.550)",
+        "vs previous_best appears 50/50 by total WR but has strong first/second-player bias; ignored due extreme side bias",
+        "previous_best matchup unstable due severe first/second-player side bias; require more games."
+      ],
+      "warning": null,
+      "reliability_warnings": []
+    },
+    "config": {
+      "games": 200,
+      "games_by_opponent": {
+        "default": 200,
+        "random": 30,
+        "negamax": 80,
+        "mcts_lite": 0,
+        "previous_best": 100
+      },
+      "simulations": 96,
+      "device": "cpu",
+      "seed": 220,
+      "eval_profile": "strong_local",
+      "candidate_timeout_ms": 2000.0,
+      "opponent_timeout_ms": 5000.0,
+      "max_opponent_timeout_rate": 0.05,
+      "max_candidate_timeout_rate": 0.01,
+      "timeout_result_policy": "fail_eval"
+    },
+    "log_paths": {
+      "json": "D:\\205zd\\Desktop\\Kaggle\\logs\\azlite_train\\pipeline_eval_final_best_eval_strong_local_20260606_113110.json",
+      "markdown": "D:\\205zd\\Desktop\\Kaggle\\logs\\azlite_train\\pipeline_eval_final_best_eval_strong_local_20260606_113110.md"
+    }
+  }
+]

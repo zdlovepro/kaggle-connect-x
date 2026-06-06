@@ -1,9 +1,5 @@
 # Training Summary
 
-- Active run summary: `D:\205zd\Desktop\Kaggle\logs\azlite_train\training_summary.md`
-
-# Training Summary
-
 - Updated at: `2026-06-06T03:31:10.289057+00:00`
 - Best checkpoint: `D:\205zd\Desktop\Kaggle\checkpoints\azlite_train\best.pt` (iteration `3`)
 - Latest checkpoint: `D:\205zd\Desktop\Kaggle\checkpoints\azlite_train\latest.pt` (iteration `30`)

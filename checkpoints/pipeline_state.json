@@ -1,9 +1,34 @@
 {
-  "teacher_data_path": "D:\\205zd\\Desktop\\Kaggle\\data\\teacher\\teacher_d5_n50000.npz",
+  "teacher_data_path": "D:\\205zd\\Desktop\\Kaggle\\data\\teacher\\teacher_d5_n50000_vteacher_r2.npz",
   "pretrained_checkpoint": "D:\\205zd\\Desktop\\Kaggle\\checkpoints\\azlite_pretrained.pt",
-  "updated_at": "2026-06-01T19:30:28.081177+00:00",
-  "last_run_mode": "bootstrap",
+  "updated_at": "2026-06-06T03:31:10.264661+00:00",
+  "last_run_mode": "selfplay",
   "latest_checkpoint": "D:\\205zd\\Desktop\\Kaggle\\checkpoints\\azlite_train\\latest.pt",
   "best_checkpoint": "D:\\205zd\\Desktop\\Kaggle\\checkpoints\\azlite_train\\best.pt",
-  "train_checkpoint_dir": "D:\\205zd\\Desktop\\Kaggle\\checkpoints\\azlite_train"
+  "train_checkpoint_dir": "D:\\205zd\\Desktop\\Kaggle\\checkpoints\\azlite_train",
+  "selfplay_data_dir": "D:\\205zd\\Desktop\\Kaggle\\data\\selfplay\\azlite_train",
+  "logs_dir": "D:\\205zd\\Desktop\\Kaggle\\logs\\azlite_train",
+  "training_summary_path": "D:\\205zd\\Desktop\\Kaggle\\logs\\azlite_train\\training_summary.md",
+  "last_iteration": 30,
+  "best_iteration": 3,
+  "previous_best_checkpoint": "D:\\205zd\\Desktop\\Kaggle\\checkpoints\\azlite_train\\archived_best\\previous_best_snapshot_iter0030.pt",
+  "latest_eval_passed_gating": true,
+  "latest_eval_reliable": true,
+  "best_eval_reliable": true,
+  "latest_eval_previous_best_available": true,
+  "best_eval_previous_best_available": true,
+  "latest_eval_side_bias_warning": false,
+  "best_eval_side_bias_warning": true,
+  "latest_eval_unstable_previous_best_eval": false,
+  "best_eval_unstable_previous_best_eval": true,
+  "recommended_checkpoint": "D:\\205zd\\Desktop\\Kaggle\\checkpoints\\azlite_train\\latest.pt",
+  "final_eval_profiles": [
+    "kaggle_like",
+    "strong_local"
+  ],
+  "train_eval_profile": "quick",
+  "final_eval_latest_log": "D:\\205zd\\Desktop\\Kaggle\\logs\\azlite_train\\pipeline_eval_final_latest_eval_20260606_080549.json",
+  "final_eval_best_log": "D:\\205zd\\Desktop\\Kaggle\\logs\\azlite_train\\pipeline_eval_final_best_eval_20260606_102435.json",
+  "final_eval_latest_strong_local_log": "D:\\205zd\\Desktop\\Kaggle\\logs\\azlite_train\\pipeline_eval_final_latest_eval_strong_local_20260606_093554.json",
+  "final_eval_best_strong_local_log": "D:\\205zd\\Desktop\\Kaggle\\logs\\azlite_train\\pipeline_eval_final_best_eval_strong_local_20260606_113110.json"
 }

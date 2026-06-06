@@ -26,6 +26,7 @@ import numpy as np
 
 from azlite.board import (
     apply_move,
+    board_to_bitboards_and_heights,
     find_immediate_block,
     find_immediate_win,
     legal_moves,
@@ -34,11 +35,12 @@ from azlite.board import (
 )
 from azlite.puct_mcts import HeuristicEvaluator, run_mcts
 from azlite.runtime import configure_cpu_runtime, configure_worker_runtime, suggest_cpu_plan
+from connectx.bitboard import drop_pos as _shared_drop_pos, has_won as _shared_has_won
 
 try:
-    import submission as _submission
+    from agents import original_submission as _stable_original_submission
 except Exception:
-    _submission = None
+    _stable_original_submission = None
 
 try:
     from agents import minimax_bitboard as _mm
@@ -180,6 +182,51 @@ class TeacherContext:
                 time_budget_ms=float(self.negamax_time_ms),
                 use_tt=True,
             )
+
+
+@dataclass(frozen=True)
+class TeacherBackendResolution:
+    requested: str
+    effective: str
+    fallback_reasons: Tuple[str, ...]
+
+
+def _has_stable_strong_backend() -> bool:
+    return bool(
+        _stable_original_submission is not None
+        and hasattr(_stable_original_submission, "score_teacher_moves")
+    )
+
+
+def resolve_teacher_backend(teacher: str) -> TeacherBackendResolution:
+    requested = str(teacher).strip().lower() or "auto"
+    reasons: List[str] = []
+
+    if requested == "strong":
+        if _has_stable_strong_backend():
+            return TeacherBackendResolution(requested=requested, effective="strong", fallback_reasons=())
+        reasons.append(
+            "stable strong backend unavailable; root submission.py is ignored to avoid brittle private-function coupling"
+        )
+        if _mm is not None:
+            reasons.append("falling back to negamax backend from agents.minimax_bitboard")
+            return TeacherBackendResolution(requested=requested, effective="negamax", fallback_reasons=tuple(reasons))
+        reasons.append("negamax backend unavailable; falling back to mcts")
+        return TeacherBackendResolution(requested=requested, effective="mcts", fallback_reasons=tuple(reasons))
+
+    if requested == "auto":
+        if _has_stable_strong_backend():
+            return TeacherBackendResolution(requested=requested, effective="strong", fallback_reasons=())
+        reasons.append(
+            "stable strong backend unavailable; root submission.py is ignored to avoid brittle private-function coupling"
+        )
+        if _mm is not None:
+            reasons.append("auto fallback selected negamax backend")
+            return TeacherBackendResolution(requested=requested, effective="negamax", fallback_reasons=tuple(reasons))
+        reasons.append("negamax backend unavailable; auto fallback selected mcts")
+        return TeacherBackendResolution(requested=requested, effective="mcts", fallback_reasons=tuple(reasons))
+
+    return TeacherBackendResolution(requested=requested, effective=requested, fallback_reasons=())
 
 
 def _pick_random(board: np.ndarray, rng: random.Random) -> int:
@@ -460,8 +507,7 @@ def _score_with_negamax(board: np.ndarray, mark: int, depth: int, ctx: TeacherCo
     if not valid or _mm is None or ctx.negamax_agent is None:
         return _score_with_heuristic(board, mark, ctx)
 
-    flat = board.reshape(-1).astype(np.int8).tolist()
-    b1, b2, heights = _mm._list_to_bitboards(flat)
+    b1, b2, heights = board_to_bitboards_and_heights(board)
     if mark == 1:
         b_self, b_opp = b1, b2
     else:
@@ -475,10 +521,10 @@ def _score_with_negamax(board: np.ndarray, mark: int, depth: int, ctx: TeacherCo
 
     d = max(1, int(depth))
     for col in valid:
-        pos = _mm._drop_piece_bb(heights, col)
+        pos = _shared_drop_pos(heights, col)
         mask = np.uint64(1) << np.uint64(pos)
         child_self = b_self | mask
-        if _mm.has_won(child_self):
+        if _shared_has_won(child_self):
             scores[col] = 10000.0
             continue
 
@@ -513,66 +559,21 @@ def _score_with_strong_submission(
     depth: int,
     ctx: TeacherContext,
 ) -> Tuple[np.ndarray, float]:
-    valid = legal_moves(board)
-    scores = np.full(COLS, -np.inf, dtype=np.float64)
-    if not valid or _submission is None:
-        return _score_with_negamax(board, mark, depth, ctx)
-
-    flat = board.reshape(-1).astype(np.int8).tolist()
-    b1, b2 = _submission._list_to_bitboards(flat)
-    if mark == 1:
-        b_self, b_opp = b1, b2
-    else:
-        b_self, b_opp = b2, b1
-    heights = _submission._get_heights_from_list(flat)
-
-    hash_key = _submission._zobrist_init(b_self, b_opp)
-    mirror_hash_key = _submission._zobrist_init_mirror(b_self, b_opp)
-
-    _submission._search_start = time.perf_counter()
-    _submission._search_soft_budget_ms = 1e12
-    _submission._search_hard_budget_ms = 1e12
-    _submission._timed_out = False
-    _submission._nodes = 0
-
-    d = max(1, int(depth))
-    for col in valid:
-        pos = _submission._drop_pos(heights, col)
-        mirror_pos = _submission._MIRROR_POS[pos]
-        mask = np.uint64(1) << np.uint64(pos)
-
-        child_self = b_self | mask
-        if _submission._has_won(child_self):
-            scores[col] = float(_submission.MATE_SCORE)
-            continue
-
-        heights[col] += 1
-        child_hash = _submission._zobrist_update(hash_key, pos, 1)
-        child_mirror = _submission._zobrist_update(mirror_hash_key, mirror_pos, 1)
-        child_score, _ = _submission._negascout(
-            child_self,
-            b_opp,
-            heights,
-            d - 1,
-            -math.inf,
-            math.inf,
-            -1.0,
-            child_hash,
-            child_mirror,
-            exact_mode=False,
-        )
-        heights[col] -= 1
-
-        if _submission._timed_out:
-            _submission._timed_out = False
-            scores[col] = 0.0
-        else:
-            scores[col] = -float(child_score)
-
-    best_score = float(np.max(scores[valid]))
-    denom = max(1.0, float(getattr(_submission, "MATE_SCORE", 100000.0)))
-    value = float(np.tanh(best_score / denom))
-    return scores, max(-1.0, min(1.0, value))
+    if _has_stable_strong_backend():
+        try:
+            scores, value = _stable_original_submission.score_teacher_moves(
+                board=np.asarray(board, dtype=np.int8),
+                mark=int(mark),
+                depth=max(1, int(depth)),
+                teacher_depth=max(1, int(ctx.teacher_depth)),
+            )
+            return (
+                np.asarray(scores, dtype=np.float64),
+                max(-1.0, min(1.0, float(value))),
+            )
+        except Exception:
+            pass
+    return _score_with_negamax(board, mark, depth, ctx)
 
 
 def teacher_scores(
@@ -583,20 +584,18 @@ def teacher_scores(
     ctx: TeacherContext,
 ) -> Tuple[np.ndarray, float]:
     """Return action scores and value from current player perspective."""
-    if teacher == "strong":
+    effective = str(teacher).strip().lower()
+    if effective == "strong":
         return _score_with_strong_submission(board, mark, teacher_depth, ctx)
-    if teacher == "negamax":
+    if effective == "negamax":
         return _score_with_negamax(board, mark, teacher_depth, ctx)
-    if teacher == "mcts":
+    if effective == "mcts":
         return _score_with_mcts(board, mark, ctx)
-    if teacher == "heuristic":
+    if effective == "heuristic":
         return _score_with_heuristic(board, mark, ctx)
-
-    # auto: strongest available fallback chain
-    if _submission is not None:
-        return _score_with_strong_submission(board, mark, teacher_depth, ctx)
-    if _mm is not None:
-        return _score_with_negamax(board, mark, teacher_depth, ctx)
+    if effective == "auto":
+        resolution = resolve_teacher_backend("auto")
+        return teacher_scores(board, mark, resolution.effective, teacher_depth, ctx)
     return _score_with_heuristic(board, mark, ctx)
 
 
@@ -668,6 +667,8 @@ def _build_teacher_dataset_sequential(
     source_sampling_mode: str = "quota",
     max_source_stall_games: int = 128,
     source_targets: Optional[Mapping[str, int]] = None,
+    teacher_backend: Optional[str] = None,
+    teacher_fallback_reasons: Optional[Sequence[str]] = None,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Dict[str, object]]:
     ctx = TeacherContext(
         teacher_depth=teacher_depth,
@@ -676,6 +677,9 @@ def _build_teacher_dataset_sequential(
         negamax_time_ms=negamax_time_ms,
     )
     rng = random.Random(seed)
+    requested_teacher = str(teacher).strip().lower()
+    effective_teacher = str(teacher_backend).strip().lower() if teacher_backend else requested_teacher
+    fallback_reasons = [str(x) for x in (teacher_fallback_reasons or ())]
 
     sampled = _collect_positions_with_targets(
         positions=positions,
@@ -702,7 +706,7 @@ def _build_teacher_dataset_sequential(
         scores, teacher_value = teacher_scores(
             board=board,
             mark=mark,
-            teacher=teacher,
+            teacher=effective_teacher,
             teacher_depth=teacher_depth,
             ctx=ctx,
         )
@@ -748,7 +752,9 @@ def _build_teacher_dataset_sequential(
     values_arr = np.asarray(values, dtype=np.float32)
 
     metadata = {
-        "teacher_type": teacher,
+        "teacher_type": requested_teacher,
+        "teacher_backend": effective_teacher,
+        "teacher_fallback_reasons": fallback_reasons,
         "teacher_depth": int(teacher_depth),
         "positions_requested": int(positions),
         "positions_saved": int(states_arr.shape[0]),
@@ -806,6 +812,8 @@ def _teacher_worker_build(payload: Dict[str, object]):
         source_sampling_mode=str(payload["source_sampling_mode"]),
         max_source_stall_games=int(payload["max_source_stall_games"]),
         source_targets=dict(payload["source_targets"]),
+        teacher_backend=str(payload.get("teacher_backend") or payload["teacher"]),
+        teacher_fallback_reasons=list(payload.get("teacher_fallback_reasons") or []),
     )
 
 
@@ -848,6 +856,15 @@ def build_teacher_dataset(
     configure_cpu_runtime(main_cpu_threads)
     n_workers = max(1, int(workers))
     total_positions = max(0, int(positions))
+    teacher_resolution = resolve_teacher_backend(teacher)
+    if teacher_resolution.fallback_reasons:
+        print(
+            "[teacher_data] teacher backend fallback requested={req} effective={eff} reasons={reasons}".format(
+                req=teacher_resolution.requested,
+                eff=teacher_resolution.effective,
+                reasons=" | ".join(teacher_resolution.fallback_reasons),
+            )
+        )
     if n_workers <= 1 or total_positions <= 0:
         states_arr, policies_arr, values_arr, metadata = _build_teacher_dataset_sequential(
             positions=total_positions,
@@ -867,6 +884,8 @@ def build_teacher_dataset(
             max_state_repeats=max_state_repeats,
             source_sampling_mode=source_sampling_mode,
             max_source_stall_games=max_source_stall_games,
+            teacher_backend=teacher_resolution.effective,
+            teacher_fallback_reasons=teacher_resolution.fallback_reasons,
         )
         metadata["parallel_workers"] = 1
         metadata["main_cpu_threads"] = int(main_cpu_threads or suggest_cpu_plan()["main_threads"])
@@ -903,6 +922,8 @@ def build_teacher_dataset(
                 "max_source_stall_games": max_source_stall_games,
                 "source_targets": shard_targets,
                 "worker_cpu_threads": worker_cpu_threads,
+                "teacher_backend": teacher_resolution.effective,
+                "teacher_fallback_reasons": list(teacher_resolution.fallback_reasons),
             }
         )
 
@@ -957,7 +978,9 @@ def build_teacher_dataset(
 
     cross_worker_dup = _estimate_state_duplicates(states_arr)
     metadata = {
-        "teacher_type": teacher,
+        "teacher_type": teacher_resolution.requested,
+        "teacher_backend": teacher_resolution.effective,
+        "teacher_fallback_reasons": list(teacher_resolution.fallback_reasons),
         "teacher_depth": int(teacher_depth),
         "positions_requested": int(total_positions),
         "positions_saved": int(states_arr.shape[0]),
