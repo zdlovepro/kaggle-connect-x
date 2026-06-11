@@ -1,0 +1,93 @@
+{
+  "last_iteration": 102,
+  "best_iteration": 10,
+  "best_composite": 1.0,
+  "best_negamax_win_rate": 1.0,
+  "best_mcts_lite_win_rate": -1.0,
+  "best_composite_details": {
+    "score": 1.0,
+    "weights": {
+      "random": 0.03,
+      "negamax": 0.42,
+      "mcts_lite": 0.3,
+      "previous_best": 0.25
+    },
+    "components": {
+      "random": {
+        "configured_weight": 0.03,
+        "normalized_weight": 0.06666666666666667,
+        "present": true,
+        "reliable": true,
+        "included": true,
+        "win_rate": 1.0,
+        "status": "included"
+      },
+      "negamax": {
+        "configured_weight": 0.42,
+        "normalized_weight": 0.9333333333333333,
+        "present": true,
+        "reliable": true,
+        "included": true,
+        "win_rate": 1.0,
+        "status": "included"
+      },
+      "mcts_lite": {
+        "configured_weight": 0.3,
+        "normalized_weight": 0.0,
+        "present": false,
+        "reliable": false,
+        "included": false,
+        "win_rate": null,
+        "status": "missing"
+      },
+      "previous_best": {
+        "configured_weight": 0.25,
+        "normalized_weight": 0.0,
+        "present": false,
+        "reliable": false,
+        "included": false,
+        "win_rate": null,
+        "status": "missing"
+      }
+    },
+    "included_weight_sum": 0.44999999999999996,
+    "all_key_metrics_unreliable": false,
+    "key_metrics": [
+      "negamax",
+      "mcts_lite",
+      "previous_best"
+    ]
+  },
+  "latest_composite": null,
+  "latest_negamax_win_rate": null,
+  "latest_mcts_lite_win_rate": null,
+  "side_bias_warning": false,
+  "unstable_previous_best_eval": false,
+  "latest_composite_details": null,
+  "latest_checkpoint": "D:\\205zd\\Desktop\\Kaggle\\checkpoints\\azlite_train_d6_r3_100iter\\latest.pt",
+  "best_checkpoint": "D:\\205zd\\Desktop\\Kaggle\\checkpoints\\azlite_train_d6_r3_100iter\\best.pt",
+  "previous_best_checkpoint": "D:\\205zd\\Desktop\\Kaggle\\checkpoints\\azlite_train_d6_r3_100iter\\archived_best\\previous_best_snapshot_iter0100.pt",
+  "archived_best_checkpoint": "D:\\205zd\\Desktop\\Kaggle\\checkpoints\\azlite_train_d6_r3_100iter\\archived_best\\previous_best_snapshot_iter0100.pt",
+  "eval_profile": "quick",
+  "candidate_timeout_ms": 2000.0,
+  "opponent_timeout_ms": 4000.0,
+  "eval_games_by_opponent": {
+    "default": 100,
+    "random": 20,
+    "negamax": 80,
+    "mcts_lite": 0,
+    "previous_best": 80
+  },
+  "eval_mcts_lite_every": 2,
+  "teacher_buffer_size": 80000,
+  "selfplay_buffer_size": 577158,
+  "buffer_size": 657158,
+  "teacher_batch_ratio_start": 0.08,
+  "teacher_batch_ratio_end": 0.01,
+  "teacher_batch_ratio_current": 0.03191919191919192,
+  "selfplay_actor_mode": "alternate",
+  "self_play_workers": 8,
+  "main_cpu_threads": 2,
+  "worker_cpu_threads": 1,
+  "updated_at": "2026-06-11T15:30:02.822127+00:00"
+}
